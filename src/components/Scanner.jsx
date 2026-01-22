@@ -1,90 +1,115 @@
-import React, { useEffect, useRef } from 'react';
-import { Html5QrcodeScanner } from 'html5-qrcode';
+import React, { useEffect, useRef, useState } from 'react';
+import { Html5Qrcode } from 'html5-qrcode';
+import { RefreshCw } from 'lucide-react';
 
 const Scanner = ({ onScan }) => {
-    // ID for the container
-    const scannerId = "html5qr-code-full-region";
+    const scannerId = "reader";
     const scannerRef = useRef(null);
-    // Ref to hold the latest callback without triggering re-effects
+    const [torchOn, setTorchOn] = useState(false);
+    const [hasTorch, setHasTorch] = useState(false);
+
+    // Cooldown Ref
+    const lastScanTimeRef = useRef(0);
     const onScanRef = useRef(onScan);
 
     useEffect(() => {
         onScanRef.current = onScan;
     }, [onScan]);
 
-    // Cooldown Ref
-    const lastScanTimeRef = useRef(0);
-
     useEffect(() => {
-        // Prevent double init in Strict Mode
-        if (scannerRef.current) return;
+        const html5QrCode = new Html5Qrcode(scannerId);
+        scannerRef.current = html5QrCode;
 
-        const scanner = new Html5QrcodeScanner(
-            scannerId,
-            {
-                fps: 10,
-                qrbox: { width: 250, height: 250 },
-                aspectRatio: 1.0,
-                showTorchButtonIfSupported: true,
-                videoConstraints: {
-                    facingMode: "environment"
-                }
-            },
-            /* verbose= */ false
-        );
+        const config = {
+            fps: 10,
+            qrbox: { width: 250, height: 250 },
+            aspectRatio: 1.0
+        };
 
-        scannerRef.current = scanner;
+        const startScanner = async () => {
+            try {
+                await html5QrCode.start(
+                    { facingMode: "environment" },
+                    config,
+                    (decodedText, decodedResult) => {
+                        const now = Date.now();
+                        if (now - lastScanTimeRef.current < 3000) {
+                            return;
+                        }
+                        if (onScanRef.current) {
+                            lastScanTimeRef.current = now;
+                            onScanRef.current(decodedText);
+                        }
+                    },
+                    (errorMessage) => {
+                        // quiet
+                    }
+                );
 
-        const onScanSuccess = (decodedText, decodedResult) => {
-            const now = Date.now();
-            // 3000ms delay logic
-            if (now - lastScanTimeRef.current < 3000) {
-                return; // Ignored (Cooldown)
-            }
-
-            if (onScanRef.current) {
-                lastScanTimeRef.current = now;
-                onScanRef.current(decodedText);
+                // Check for Torch capability
+                // We need to wait a bit or check the running track
+                // Note: html5-qrcode doesn't expose track easily in all versions, 
+                // but we can try applying constraints if needed.
+                // For now, let's assume if it started, we might check capabilities if the library exposes getRunningTrackCameraCapabilities 
+                // or just rely on applyVideoConstraints catching errors.
+                setHasTorch(true); // Optimistically show torch button, or logic to detect
+            } catch (err) {
+                console.error("Error starting scanner", err);
             }
         };
 
-        const onScanFailure = (error) => {
-            // quiet
-        };
+        startScanner();
 
-        scanner.render(onScanSuccess, onScanFailure);
-
-        // Hack to hide the library's "Stop Scanning" button so we can use our own global one
-        const observer = new MutationObserver((mutations) => {
-            const stopBtn = Array.from(document.querySelectorAll("#html5qr-code-full-region button"))
-                .find(btn => btn.innerText.includes("Stop Scanning") || btn.innerText.toUpperCase().includes("STOP"));
-
-            if (stopBtn) {
-                stopBtn.style.display = "none";
-            }
-        });
-
-        const container = document.getElementById(scannerId);
-        if (container) {
-            observer.observe(container, { childList: true, subtree: true });
-        }
-
-        // Cleanup
         return () => {
-            observer.disconnect();
             if (scannerRef.current) {
-                scannerRef.current.clear().catch(error => {
-                    console.error("Failed to clear scanner", error);
+                scannerRef.current.stop().then(() => {
+                    scannerRef.current.clear();
+                }).catch(err => {
+                    console.error("Failed to stop scanner", err);
                 });
-                scannerRef.current = null;
             }
         };
-    }, []); // Empty dependency array = mount once and stay alive!
+    }, []);
+
+    const toggleTorch = async () => {
+        if (!scannerRef.current) return;
+        try {
+            await scannerRef.current.applyVideoConstraints({
+                advanced: [{ torch: !torchOn }]
+            });
+            setTorchOn(!torchOn);
+        } catch (err) {
+            console.error("Torch not supported or failed", err);
+            setHasTorch(false); // Hide button if failed
+        }
+    };
 
     return (
         <div className="scanner-wrapper">
-            {/* Ensure ID matches the one passed to constructor */}
-            <div id={scannerId}></div>
+            <div id={scannerId} style={{ width: '100%', overflow: 'hidden', borderRadius: '0.75rem' }}></div>
+
+            {/* Custom Torch Button - Only show if we think we might have torch */}
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'center' }}>
+                <button
+                    onClick={toggleTorch}
+                    type="button"
+                    style={{
+                        padding: '0.75rem 1.5rem',
+                        borderRadius: '9999px',
+                        border: 'none',
+                        backgroundColor: torchOn ? '#fbbf24' : '#f1f5f9',
+                        color: torchOn ? '#000' : '#64748b',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        boxShadow: '0 2px 5px rgba(0,0,0,0.1)'
+                    }}
+                >
+                    {torchOn ? 'Turn Off Flash' : 'Turn On Flash'}
+                </button>
+            </div>
         </div>
     );
 };
