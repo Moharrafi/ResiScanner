@@ -12,6 +12,9 @@ const Scanner = ({ onScan }) => {
         onScanRef.current = onScan;
     }, [onScan]);
 
+    // Cooldown Ref
+    const lastScanTimeRef = useRef(0);
+
     useEffect(() => {
         // Prevent double init in Strict Mode
         if (scannerRef.current) return;
@@ -33,7 +36,14 @@ const Scanner = ({ onScan }) => {
         scannerRef.current = scanner;
 
         const onScanSuccess = (decodedText, decodedResult) => {
+            const now = Date.now();
+            // 3000ms delay logic
+            if (now - lastScanTimeRef.current < 3000) {
+                return; // Ignored (Cooldown)
+            }
+
             if (onScanRef.current) {
+                lastScanTimeRef.current = now;
                 onScanRef.current(decodedText);
             }
         };

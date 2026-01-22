@@ -374,11 +374,13 @@ main {
 
 /* Customize Buttons inside the scanner */
 #html5qr-code-full-region button {
-  width: 95%;
-  /* Not fully edge-to-edge */
+  width: 95% !important;
+  /* Force width */
+  max-width: 350px;
+  /* Prevent too wide on desktop */
   padding: 0.75rem 1rem;
-  margin: 0 auto 0.75rem auto;
-  /* Center buttons */
+  margin: 0 auto 0.75rem auto !important;
+  /* Force centering */
   border: none;
   border-radius: var(--radius);
   font-weight: 600;
@@ -387,8 +389,10 @@ main {
   transition: all 0.2s;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  display: block;
-  /* Ensure centering works */
+  display: block !important;
+  /* Ensure block level for margin auto */
+  box-sizing: border-box;
+  /* Handle padding correctly */
 }
 
 /* "Start Scanning" Button (Usually the first one or create based on context)
