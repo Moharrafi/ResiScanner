@@ -8,8 +8,14 @@ const Scanner = ({ onScan }) => {
         // Initialize scanner
         const scanner = new Html5QrcodeScanner(
             "reader",
-            { fps: 10, qrbox: { width: 250, height: 250 } },
-      /* verbose= */ false
+            {
+                fps: 10,
+                qrbox: { width: 250, height: 250 },
+                videoConstraints: {
+                    facingMode: "environment"
+                }
+            },
+            /* verbose= */ false
         );
 
         const onScanSuccess = (decodedText, decodedResult) => {
