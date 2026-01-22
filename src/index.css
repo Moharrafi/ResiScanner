@@ -337,9 +337,69 @@ main {
   background: white;
 }
 
+/* Hide annoying links/icons */
 #reader__dashboard_section_csr span,
-#reader__dashboard_section_swaplink {
+#reader__dashboard_section_swaplink,
+#html5qr-code-full-region img[alt="Info icon"] {
   display: none !important;
+}
+
+/* Customize the Camera Selection Dropdown */
+#html5qr-code-full-region select {
+  width: 100%;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: #f8fafc;
+  font-family: inherit;
+  font-size: 0.95rem;
+  color: var(--text-main);
+  outline: none;
+  cursor: pointer;
+}
+
+#html5qr-code-full-region select:focus {
+  border-color: var(--accent);
+  background-color: white;
+}
+
+/* Customize Buttons inside the scanner */
+#html5qr-code-full-region button {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* "Start Scanning" Button (Usually the first one or create based on context)
+   Since library classes are dynamic, we target generally but style safely.
+*/
+#html5qr-code-full-region button {
+  background-color: var(--accent) !important;
+  color: white !important;
+}
+
+#html5qr-code-full-region button:hover {
+  background-color: #1d4ed8 !important;
+  /* Darker Blue */
+}
+
+/* File Selection Link */
+#html5qr-code-full-region a {
+  display: block;
+  text-align: center;
+  margin-top: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-decoration: underline;
 }
 
 /* Buttons */
