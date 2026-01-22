@@ -1,16 +1,69 @@
-# React + Vite
+# 📦 Aplikasi Resi Scanner
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplikasi Progressive Web App (PWA) modern yang dirancang khusus untuk mempermudah dan mempercepat verifikasi resi pengiriman (AWB) dari manifest kargo berbentuk PDF.
 
-Currently, two official plugins are available:
+![App Screenshot](public/pwa-512x512.png)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## ✨ Fitur Utama
 
-## React Compiler
+### 📄 Parsing PDF Cerdas
+- **Ekstraksi Otomatis**: Secara otomatis mendeteksi dan mengambil nomor resi (contoh: `SPXID...`, `JX...`, kode 12 digit) dari file manifest PDF yang diupload.
+- **Share Target**: Fitur "Bagikan" / "Share" file PDF langsung dari WhatsApp atau File Manager ke aplikasi ini (Fitur PWA Android).
+- **Mode Debug**: Opsi untuk melihat teks mentah hasil pembacaan PDF jika ada masalah.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 📷 Scanner Canggih
+- **Kamera Terintegrasi**: Scanner Barcode dan QR Code bawaan yang cepat menggunakan `html5-qrcode`.
+- **Input Manual**: Kolom input cadangan untuk mengetik kode resi jika barcode rusak atau tidak terbaca.
+- **Pencocokan Kilat**: Langsung mencocokkan kode yang discan dengan daftar resi dari PDF.
+- **Anti Duplikat**: Memberikan peringatan suara dan visual jika resi sudah pernah discan sebelumnya.
 
-## Expanding the ESLint configuration
+### 🎨 Tampilan Modern (UI/UX)
+- **Desain Mobile-First**: Tata letak yang dimaksimalkan untuk penggunaan di HP, tombol mudah dijangkau jari.
+- **Indikator Visual**: Progress bar, tanda centang hijau, dan pesan error warna merah yang jelas.
+- **Tema**: Menggunakan gaya "Modern Logistics" yang bersih dan profesional.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### 🔊 Sistem Suara Interaktif
+- **5 Pilihan Tema SuaraUnik**:
+  - 🎵 **Modern**: Suara 'ting' digital yang enak didengar.
+  - 📟 **Classic**: Suara 'beep' scanner minimarket jadul.
+  - 👾 **Arcade**: Efek suara game retro 8-bit.
+  - ☁️ **Soft**: Nada lembut dan tidak berisik.
+  - 🤖 **Robot**: Efek suara futuristik/metalik.
+- **Text-to-Speech**: Aplikasi akan berbicara "Sudah Lengkap" secara otomatis ketika semua resi berhasil discan.
+- **Pengaturan Tersimpan**: Aplikasi mengingat pilihan suara Anda walaupun browser ditutup.
+
+## 🚀 Cara Install (PWA)
+
+Aplikasi ini adalah PWA, jadi bisa diinstall tanpa lewat Play Store:
+
+1.  **Buka Website** ini di Google Chrome (Android) atau Safari (iOS).
+2.  Tunggu muncul pop-up **"Add to Home Screen"** atau pilih menu **"Install App"** di pengaturan browser.
+3.  Aplikasi akan muncul di layar utama HP Anda dan bisa dijalankan seperti aplikasi native (bisa offline!).
+
+## 🛠️ Teknologi
+
+Project ini dibangun menggunakan:
+- **React 19** + **Vite** (Framework & Build Tool)
+- **PDF.js** (Pembacaan File PDF)
+- **html5-qrcode** (Scanner Kamera)
+- **Vite PWA Plugin** (Fitur Offline & Install)
+- **Lucide React** (Ikon Vektor)
+
+### Menjalankan di Komputer (Localhost)
+
+```bash
+# Install dependencies
+npm install
+
+# Jalankan server development
+npm run dev
+
+# Build untuk production
+npm run build
+```
+
+### Arsitektur Audio
+Aplikasi ini menggunakan Web Audio API (`AudioContext`) untuk menghasilkan suara secara programatik (sintesis gelombang suara), sehingga aplikasi tetap ringan tanpa perlu memuat banyak file MP3 eksternal.
+
+---
+*Dibuat untuk Efisiensi Logistik.*
