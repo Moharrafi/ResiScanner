@@ -471,7 +471,7 @@ function App() {
               }
             }}
             style={{
-              marginBottom: '1rem',
+              marginBottom: '0.5rem',
               color: '#dc2626',
               border: '1px solid #fca5a5',
               background: '#fef2f2',

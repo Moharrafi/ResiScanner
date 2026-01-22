@@ -574,8 +574,10 @@ main {
 
 /* Footer & Upload Button */
 footer {
-  margin-top: 2rem;
-  padding-top: 1rem;
+  margin-top: 1rem;
+  /* Reduced from 2rem */
+  padding-top: 0.5rem;
+  /* Reduced from 1rem */
   display: flex;
   flex-direction: column;
   align-items: center;
