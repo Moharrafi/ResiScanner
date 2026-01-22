@@ -364,11 +364,21 @@ main {
   background-color: white;
 }
 
+/* Dashboard wrapper for controls */
+#reader__dashboard_section_csr {
+  padding: 1rem 0.5rem !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 /* Customize Buttons inside the scanner */
 #html5qr-code-full-region button {
-  width: 100%;
+  width: 95%;
+  /* Not fully edge-to-edge */
   padding: 0.75rem 1rem;
-  margin-bottom: 0.75rem;
+  margin: 0 auto 0.75rem auto;
+  /* Center buttons */
   border: none;
   border-radius: var(--radius);
   font-weight: 600;
@@ -377,6 +387,8 @@ main {
   transition: all 0.2s;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  display: block;
+  /* Ensure centering works */
 }
 
 /* "Start Scanning" Button (Usually the first one or create based on context)
