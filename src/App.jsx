@@ -284,11 +284,7 @@ function App() {
             const blob = await response.blob();
             const file = new File([blob], "shared-receipt.pdf", { type: "application/pdf" });
 
-            const file = new File([blob], "shared-receipt.pdf", { type: "application/pdf" });
-
             await processFiles([file]);
-
-            // Cleanup
 
             // Cleanup
             await cache.delete('shared-file');
