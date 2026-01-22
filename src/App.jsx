@@ -458,6 +458,38 @@ function App() {
       </main>
 
       <footer>
+        {orders.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("Are you sure you want to clear all orders? This action cannot be undone.")) {
+                setOrders([]);
+                setComplete(false);
+                setLastScanned(null);
+                setExtractedText("");
+                setErrorMsg("");
+              }
+            }}
+            style={{
+              marginBottom: '1rem',
+              color: '#dc2626',
+              border: '1px solid #fca5a5',
+              background: '#fef2f2',
+              padding: '0.5rem 1rem',
+              borderRadius: '0.5rem',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              width: 'fit-content'
+            }}
+          >
+            <Trash2 size={16} /> Clear List
+          </button>
+        )}
+
         <label className="upload-btn">
           Upload PDF
           <input
@@ -476,35 +508,6 @@ function App() {
         )}
 
         <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center' }}>
-          <button
-            type="button"
-            onClick={() => {
-              if (window.confirm("Are you sure you want to clear all orders? This action cannot be undone.")) {
-                setOrders([]);
-                setComplete(false);
-                setLastScanned(null);
-                setExtractedText("");
-                setErrorMsg("");
-              }
-            }}
-            style={{
-              color: '#dc2626',
-              border: '1px solid #fca5a5',
-              background: '#fef2f2',
-              padding: '0.5rem 1rem',
-              borderRadius: '0.5rem',
-              fontSize: '0.85rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              width: 'fit-content'
-            }}
-          >
-            <Trash2 size={16} /> Clear List
-          </button>
-
           <button
             type="button"
             onClick={() => setShowDebug(!showDebug)}
