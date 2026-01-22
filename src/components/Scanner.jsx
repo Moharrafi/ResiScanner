@@ -5,6 +5,12 @@ const Scanner = ({ onScan }) => {
     // ID for the container
     const scannerId = "html5qr-code-full-region";
     const scannerRef = useRef(null);
+    // Ref to hold the latest callback without triggering re-effects
+    const onScanRef = useRef(onScan);
+
+    useEffect(() => {
+        onScanRef.current = onScan;
+    }, [onScan]);
 
     useEffect(() => {
         // Prevent double init in Strict Mode
@@ -27,7 +33,9 @@ const Scanner = ({ onScan }) => {
         scannerRef.current = scanner;
 
         const onScanSuccess = (decodedText, decodedResult) => {
-            onScan(decodedText);
+            if (onScanRef.current) {
+                onScanRef.current(decodedText);
+            }
         };
 
         const onScanFailure = (error) => {
@@ -45,7 +53,7 @@ const Scanner = ({ onScan }) => {
                 scannerRef.current = null;
             }
         };
-    }, [onScan]);
+    }, []); // Empty dependency array = mount once and stay alive!
 
     return (
         <div className="scanner-wrapper">
