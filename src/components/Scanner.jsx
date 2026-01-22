@@ -54,8 +54,24 @@ const Scanner = ({ onScan }) => {
 
         scanner.render(onScanSuccess, onScanFailure);
 
+        // Hack to hide the library's "Stop Scanning" button so we can use our own global one
+        const observer = new MutationObserver((mutations) => {
+            const stopBtn = Array.from(document.querySelectorAll("#html5qr-code-full-region button"))
+                .find(btn => btn.innerText.includes("Stop Scanning") || btn.innerText.toUpperCase().includes("STOP"));
+
+            if (stopBtn) {
+                stopBtn.style.display = "none";
+            }
+        });
+
+        const container = document.getElementById(scannerId);
+        if (container) {
+            observer.observe(container, { childList: true, subtree: true });
+        }
+
         // Cleanup
         return () => {
+            observer.disconnect();
             if (scannerRef.current) {
                 scannerRef.current.clear().catch(error => {
                     console.error("Failed to clear scanner", error);

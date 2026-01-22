@@ -347,7 +347,7 @@ function App() {
                     onClick={() => setShowScanner(false)}
                     className="toggle-scanner-btn"
                   >
-                    Stop Camera
+                    STOP SCANNING
                   </button>
                 </>
               ) : (
@@ -355,7 +355,7 @@ function App() {
                   onClick={() => setShowScanner(true)}
                   className="start-scanner-btn"
                 >
-                  Open Camera / Scanner
+                  START SCANNING
                 </button>
               )}
 
