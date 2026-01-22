@@ -475,7 +475,22 @@ function App() {
           </div>
         )}
 
-        <div style={{ marginTop: '20px', textAlign: 'center' }}>
+        <div style={{ marginTop: '20px', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("Are you sure you want to clear the list?")) {
+                setOrders([]);
+                setComplete(false);
+                setLastScanned(null);
+                setExtractedText("");
+                setErrorMsg("");
+              }
+            }}
+            style={{ fontSize: '0.8rem', color: '#dc2626', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            Clear List
+          </button>
           <button
             type="button"
             onClick={() => setShowDebug(!showDebug)}
