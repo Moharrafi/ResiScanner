@@ -200,33 +200,74 @@ function App() {
     }
   };
 
-  const processFile = async (file) => {
+  const processFiles = async (files) => {
+    if (!files || files.length === 0) return;
+
     try {
-      const text = await parsePDF(file);
-      setExtractedText(text); // Save for debugging
-      const extractedIds = extractResi(text);
-      if (extractedIds.length > 0) {
-        setOrders(extractedIds.map(id => ({ id, scanned: false })));
+      let allText = "";
+      let allIds = [];
+      let errorCount = 0;
+
+      // Process all files
+      for (let i = 0; i < files.length; i++) {
+        try {
+          const text = await parsePDF(files[i]);
+          allText += `\n--- File ${i + 1} ---\n` + text;
+          const extractedIds = extractResi(text);
+          allIds = [...allIds, ...extractedIds];
+        } catch (err) {
+          console.error(`Error parsing file ${i}:`, err);
+          errorCount++;
+        }
+      }
+
+      setExtractedText(prev => prev + allText); // Append to debug text
+
+      if (allIds.length > 0) {
+        // Merge with existing orders, avoiding duplicates
+        const uniqueIds = [...new Set(allIds)];
+
+        setOrders(prevOrders => {
+          const existingIds = new Set(prevOrders.map(o => o.id));
+          const newOrders = uniqueIds
+            .filter(id => !existingIds.has(id))
+            .map(id => ({ id, scanned: false }));
+
+          return [...prevOrders, ...newOrders];
+        });
+
         setComplete(false);
         setErrorMsg("");
-        // Optional: play success sound to indicate load success?
-        // playSuccess(); 
+
+        // Feedback based on results
+        if (errorCount > 0) {
+          setErrorMsg(`Processed with errors. ${errorCount} file(s) failed.`);
+          playError();
+        } else {
+          // Optional: play success sound?
+        }
       } else {
-        setOrders([]);
-        setErrorMsg("No order IDs found in PDF. Try checking 'Show Raw Text'.");
-        playError();
+        if (errorCount === files.length) {
+          setErrorMsg("Failed to parse all uploaded files.");
+          playError();
+        } else {
+          setErrorMsg("No order IDs found in uploaded PDF(s).");
+          playError();
+        }
       }
     } catch (err) {
       console.error(err);
-      setErrorMsg("Failed to parse PDF.");
+      setErrorMsg("Critical error processing files.");
       playError();
     }
   };
 
   const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    await processFile(file);
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await processFiles(files);
+    // Reset input so same files can be selected again if needed
+    e.target.value = '';
   };
 
   // Handle Shared File (PWA Share Target)
@@ -243,7 +284,11 @@ function App() {
             const blob = await response.blob();
             const file = new File([blob], "shared-receipt.pdf", { type: "application/pdf" });
 
-            await processFile(file);
+            const file = new File([blob], "shared-receipt.pdf", { type: "application/pdf" });
+
+            await processFiles([file]);
+
+            // Cleanup
 
             // Cleanup
             await cache.delete('shared-file');
@@ -422,6 +467,7 @@ function App() {
           <input
             type="file"
             accept="application/pdf"
+            multiple // Allow multiple files
             onChange={handleFileUpload}
             className="hidden"
           />
