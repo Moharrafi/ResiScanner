@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, CheckCircle, AlertCircle, RefreshCw, Search, Settings, X, Volume2 } from 'lucide-react';
+import { Upload, CheckCircle, AlertCircle, RefreshCw, Search, Settings, X, Volume2, Trash2 } from 'lucide-react';
 import Scanner from './components/Scanner';
 import { parsePDF, extractResi } from './utils/pdfParser';
 import './App.css';
@@ -475,11 +475,11 @@ function App() {
           </div>
         )}
 
-        <div style={{ marginTop: '20px', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+        <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center' }}>
           <button
             type="button"
             onClick={() => {
-              if (window.confirm("Are you sure you want to clear the list?")) {
+              if (window.confirm("Are you sure you want to clear all orders? This action cannot be undone.")) {
                 setOrders([]);
                 setComplete(false);
                 setLastScanned(null);
@@ -487,16 +487,30 @@ function App() {
                 setErrorMsg("");
               }
             }}
-            style={{ fontSize: '0.8rem', color: '#dc2626', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer' }}
+            style={{
+              color: '#dc2626',
+              border: '1px solid #fca5a5',
+              background: '#fef2f2',
+              padding: '0.5rem 1rem',
+              borderRadius: '0.5rem',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              width: 'fit-content'
+            }}
           >
-            Clear List
+            <Trash2 size={16} /> Clear List
           </button>
+
           <button
             type="button"
             onClick={() => setShowDebug(!showDebug)}
-            style={{ fontSize: '0.8rem', color: '#6b7280', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer' }}
+            style={{ fontSize: '0.75rem', color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer' }}
           >
-            {showDebug ? "Hide Raw Text" : "Show Raw PDF Text (Debug)"}
+            {showDebug ? "Hide Debug Info" : "Show Debug Info"}
           </button>
         </div>
 
