@@ -1,11 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, CheckCircle, AlertCircle, RefreshCw, Search, Settings, X, Volume2, Trash2 } from 'lucide-react';
 import Scanner from './components/Scanner';
-import { parsePDF, extractResi } from './utils/pdfParser';
+import { parsePDF, extractResi, extractWeights } from './utils/pdfParser';
 import './App.css';
 
 function App() {
-  const [orders, setOrders] = useState([]);
+  // ── Persistent state: load from localStorage on init ──────────────
+  const [orders, setOrders] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('resi_orders') || '[]'); }
+    catch { return []; }
+  });
+  const [duplicates, setDuplicates] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('resi_duplicates') || '[]'); }
+    catch { return []; }
+  });
+  const [weightStats, setWeightStats] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('resi_weightStats') || '{}'); }
+    catch { return {}; }
+  });
+  // ───────────────────────────────────────────────────────────────────
+
   const [scanning, setScanning] = useState(false);
   const [lastScanned, setLastScanned] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
@@ -15,15 +29,23 @@ function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
 
+  // OCR State
+  const [ocrProgress, setOcrProgress] = useState(null); // null | { current, total }
+
   // Settings State
   const [showSettings, setShowSettings] = useState(false);
   const [soundTheme, setSoundTheme] = useState(() => {
     return localStorage.getItem('soundTheme') || 'modern';
   });
 
-  useEffect(() => {
-    localStorage.setItem('soundTheme', soundTheme);
-  }, [soundTheme]);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+
+  // ── Persist to localStorage whenever state changes ─────────────────
+  useEffect(() => { localStorage.setItem('soundTheme', soundTheme); }, [soundTheme]);
+  useEffect(() => { localStorage.setItem('resi_orders', JSON.stringify(orders)); }, [orders]);
+  useEffect(() => { localStorage.setItem('resi_duplicates', JSON.stringify(duplicates)); }, [duplicates]);
+  useEffect(() => { localStorage.setItem('resi_weightStats', JSON.stringify(weightStats)); }, [weightStats]);
+  // ────────────────────────────────────────────────────────────────────
 
   // --- AUDIO LOGIC ---
 
@@ -211,7 +233,14 @@ function App() {
       // Process all files
       for (let i = 0; i < files.length; i++) {
         try {
-          const text = await parsePDF(files[i]);
+          const text = await parsePDF(files[i], (current, total, status) => {
+            if (status === 'done') {
+              setOcrProgress(null);
+            } else {
+              setOcrProgress({ current, total, fileIndex: i + 1, totalFiles: files.length });
+            }
+          });
+          setOcrProgress(null);
           allText += `\n--- File ${i + 1} ---\n` + text;
           const extractedIds = extractResi(text);
           allIds = [...allIds, ...extractedIds];
@@ -224,7 +253,34 @@ function App() {
       setExtractedText(prev => prev + allText); // Append to debug text
 
       if (allIds.length > 0) {
-        // Merge with existing orders, avoiding duplicates
+        // --- Duplicate Logic ---
+        // 1. Duplicates within current batch
+        const batchDuplicates = allIds.filter((item, index) => allIds.indexOf(item) !== index);
+
+        // 2. Duplicates against existing orders
+        const existingIdsSet = new Set(orders.map(o => o.id));
+        const alreadyInSystem = allIds.filter(id => existingIdsSet.has(id));
+
+        const newDuplicates = [...new Set([...batchDuplicates, ...alreadyInSystem])];
+        if (newDuplicates.length > 0) {
+          setDuplicates(prev => [...new Set([...prev, ...newDuplicates])]);
+        }
+
+        // --- Weight Logic ---
+        // We need to re-extract weights from the FULL combined text of this batch to be safe, 
+        // or we accumulate from the loop. 
+        // Actually, let's extract from the allText we just built.
+        const foundWeights = extractWeights(allText);
+
+        setWeightStats(prev => {
+          const newStats = { ...prev };
+          foundWeights.forEach(w => {
+            newStats[w] = (newStats[w] || 0) + 1;
+          });
+          return newStats;
+        });
+
+        // Merge with existing orders, avoiding duplicates for the main list
         const uniqueIds = [...new Set(allIds)];
 
         setOrders(prevOrders => {
@@ -276,24 +332,39 @@ function App() {
       const params = new URLSearchParams(window.location.search);
       if (params.get('shared') === 'true') {
         try {
-          // Open the specific cache where SW stored the file
           const cache = await caches.open('share-target');
-          const response = await cache.match('shared-file');
 
-          if (response) {
-            const blob = await response.blob();
-            const file = new File([blob], "shared-receipt.pdf", { type: "application/pdf" });
+          // Read how many files were shared
+          const countRes = await cache.match('/shared-file-count');
+          if (!countRes) return;
+          const count = parseInt(await countRes.text()) || 0;
 
-            await processFiles([file]);
+          if (count > 0) {
+            const files = [];
+            for (let i = 0; i < count; i++) {
+              const res = await cache.match(`/shared-file-${i}`);
+              if (res) {
+                const blob = await res.blob();
+                files.push(new File([blob], `shared-receipt-${i + 1}.pdf`, { type: 'application/pdf' }));
+              }
+            }
 
-            // Cleanup
-            await cache.delete('shared-file');
-            // Remove query param without reload
-            window.history.replaceState({}, document.title, window.location.pathname);
+            if (files.length > 0) {
+              await processFiles(files);
+            }
+
+            // Cleanup all cached entries
+            await cache.delete('/shared-file-count');
+            for (let i = 0; i < count; i++) {
+              await cache.delete(`/shared-file-${i}`);
+            }
           }
+
+          // Remove query param without reload
+          window.history.replaceState({}, document.title, window.location.pathname);
         } catch (err) {
-          console.error("Error retrieving shared file:", err);
-          setErrorMsg("Error loading shared file.");
+          console.error('Error retrieving shared file:', err);
+          setErrorMsg('Error loading shared file.');
         }
       }
     };
@@ -377,6 +448,76 @@ function App() {
       </header>
 
       <main>
+        {/* Analysis / Report Section */}
+        {(duplicates.length > 0 || Object.keys(weightStats).length > 0) && (
+          <div className="analysis-section" style={{ marginBottom: '1rem' }}>
+            <button
+              onClick={() => setShowAnalysis(!showAnalysis)}
+              style={{
+                width: '100%',
+                padding: '0.75rem',
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: '0.5rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                cursor: 'pointer',
+                fontWeight: 600,
+                color: '#334155'
+              }}
+            >
+              <span>📊 Analysis Report</span>
+              <span>{showAnalysis ? '▲' : '▼'}</span>
+            </button>
+
+            {showAnalysis && (
+              <div style={{
+                padding: '1rem',
+                border: '1px solid #e2e8f0',
+                borderTop: 'none',
+                borderBottomLeftRadius: '0.5rem',
+                borderBottomRightRadius: '0.5rem',
+                background: '#fff'
+              }}>
+                {/* Duplicates */}
+                {duplicates.length > 0 && (
+                  <div style={{ marginBottom: '1rem' }}>
+                    <h4 style={{ color: '#dc2626', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <AlertCircle size={16} /> Duplicate Resi Detected:
+                    </h4>
+                    <div style={{ maxHeight: '100px', overflowY: 'auto', background: '#fef2f2', padding: '0.5rem', borderRadius: '0.25rem', fontSize: '0.85rem' }}>
+                      {duplicates.map(d => (
+                        <div key={d}>{d}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Weight Stats */}
+                {Object.keys(weightStats).length > 0 && (
+                  <div>
+                    <h4 style={{ color: '#0f172a', marginBottom: '0.5rem' }}>Product Quantity by Size:</h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '0.5rem' }}>
+                      {Object.entries(weightStats).map(([weight, count]) => (
+                        <div key={weight} style={{
+                          padding: '0.5rem',
+                          background: '#f1f5f9',
+                          borderRadius: '0.25rem',
+                          textAlign: 'center'
+                        }}>
+                          <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{count}</div>
+                          <div style={{ fontSize: '0.8rem', color: '#64748b', textTransform: 'uppercase' }}>{weight}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Scanner Section */}
         {orders.length > 0 ? (
           <>
@@ -455,6 +596,29 @@ function App() {
             <p>Upload a PDF to start</p>
           </div>
         )}
+
+        {/* OCR Progress Banner */}
+        {ocrProgress && (
+          <div style={{
+            marginTop: '1rem',
+            padding: '0.75rem 1rem',
+            background: '#eff6ff',
+            border: '1px solid #bfdbfe',
+            borderRadius: '0.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            fontSize: '0.9rem',
+            color: '#1e40af'
+          }}>
+            <RefreshCw size={18} style={{ animation: 'spin 1.2s linear infinite' }} />
+            <span>
+              🔍 OCR sedang berjalan...
+              {ocrProgress.totalFiles > 1 && ` (File ${ocrProgress.fileIndex}/${ocrProgress.totalFiles})`}
+              {` Halaman ${ocrProgress.current}/${ocrProgress.total}`}
+            </span>
+          </div>
+        )}
       </main>
 
       <footer>
@@ -462,12 +626,18 @@ function App() {
           <button
             type="button"
             onClick={() => {
-              if (window.confirm("Are you sure you want to clear all orders? This action cannot be undone.")) {
+              if (window.confirm("Hapus semua resi? Data tidak bisa dikembalikan.")) {
                 setOrders([]);
+                setDuplicates([]);
+                setWeightStats({});
                 setComplete(false);
                 setLastScanned(null);
                 setExtractedText("");
                 setErrorMsg("");
+                // Hapus dari localStorage
+                localStorage.removeItem('resi_orders');
+                localStorage.removeItem('resi_duplicates');
+                localStorage.removeItem('resi_weightStats');
               }
             }}
             style={{
