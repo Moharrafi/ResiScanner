@@ -33,7 +33,7 @@ const Scanner = ({ onScan }) => {
                     config,
                     (decodedText, decodedResult) => {
                         const now = Date.now();
-                        if (now - lastScanTimeRef.current < 3000) {
+                        if (now - lastScanTimeRef.current < 1500) {
                             return;
                         }
                         if (onScanRef.current) {

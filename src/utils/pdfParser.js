@@ -245,3 +245,266 @@ export const extractWeights = (text) => {
 
   return results;
 };
+
+/**
+ * Extracts per-resi product breakdown: for each shipment block, find individual items
+ * and their sizes (e.g., 5kg, 1kg).
+ *
+ * @param {string} text
+ * @returns {{ resiWeight: string, items: { type: 'bitumax' | 'biasa', size: string }[] }[]}
+ */
+export const extractProductName = (text) => {
+  const t = text.replace(/\r/g, '');
+  const lines = t.split('\n');
+
+  const extractItemSize = (line) => {
+    // Look for numbers followed by units (kg, liter, l, gr, gram, ml, lt)
+    const m = line.match(/(\d+(?:[.,]\d+)?)\s*(kg|liter|l|gr|gram|ml|lt)/i);
+    if (m) {
+      let val = parseFloat(m[1].replace(',', '.'));
+      let unit = m[2].toLowerCase();
+
+      // Standardize to KG
+      if (unit === 'gr' || unit === 'gram') {
+        return `${val / 1000}kg`;
+      }
+      if (unit === 'ml') {
+        return `${val / 1000}kg`;
+      }
+      if (unit === 'liter' || unit === 'l' || unit === 'lt') {
+        return `${val}kg`;
+      }
+
+      // Default KG
+      return `${val}kg`;
+    }
+    return null;
+  };
+
+  const weightAnchors = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].replace(/\s+/g, ' ').trim();
+    const m1 = l.match(/(?:Weight|Pe\s*ne\s*rima)\s*[：:]\s*(\d+(?:[.,]\d+)?)\s*(KG|kg)/i);
+    if (m1) {
+      weightAnchors.push({ lineIdx: i, weightLabel: `${parseFloat(m1[1].replace(',', '.'))}kg` });
+      continue;
+    }
+    const m2 = l.match(/(?:\b|^)(\d+)\.(\d{3})\s*KG\b/i);
+    if (m2) {
+      weightAnchors.push({ lineIdx: i, weightLabel: `${parseInt(m2[1])}kg` });
+      continue;
+    }
+    const m3 = l.match(/Berat\s*[：:]\s*(\d+(?:[.,]\d+)?)\s*(KG|kg|gr|gram)/i);
+    if (m3) {
+      const val = parseFloat(m3[1].replace(',', '.'));
+      const isKg = m3[2].toLowerCase().startsWith('k');
+      const label = isKg ? `${val}kg` : `${val / 1000}kg`;
+      weightAnchors.push({ lineIdx: i, weightLabel: label });
+      continue;
+    }
+  }
+
+  if (weightAnchors.length === 0) {
+    lines.forEach((l, i) => {
+      const m = l.match(/\b(\d+(?:[.,]\d+)?)\s*(KG|kg)\b/i);
+      if (m) {
+        const kg = parseFloat(m[1].replace(',', '.'));
+        if (kg >= 0.1 && kg <= 100) weightAnchors.push({ lineIdx: i, weightLabel: `${kg}kg` });
+      }
+    });
+  }
+
+  if (weightAnchors.length === 0) return [];
+
+  const blocks = [];
+  for (let i = 0; i < weightAnchors.length; i++) {
+    const anchor = weightAnchors[i];
+    const start = anchor.lineIdx;
+    const end = (i < weightAnchors.length - 1) ? weightAnchors[i + 1].lineIdx - 1 : lines.length - 1;
+
+    // Find ALL IDs in this block or nearby context (Resi numbers + Order IDs)
+    // Looking slightly above the weight label is good as IDs often sit there.
+    const contextStart = Math.max(0, start - 15);
+    const contextEnd = Math.min(lines.length - 1, end + 2);
+    const contextText = lines.slice(contextStart, contextEnd + 1).join('\n');
+    const orderIds = extractResi(contextText);
+
+    blocks.push({ weightLabel: anchor.weightLabel, startLine: start, endLine: end, orderIds });
+  }
+
+  // Also handle the potential for lines after the last weight anchor
+  // (though usually we capture everything up to each anchor)
+  // If the last anchor is far from the end, maybe add one more block?
+  // No, usually we want lines *above* the weight.
+
+  const results = [];
+  const extractMultipleSizes = (text) => {
+    const results = [];
+    // Added word boundaries \b to prevent partial matches of long IDs
+    const regex = /\b(\d+(?:[.,]\d+)?)\s*(kg|liter|l|gr|gram|ml|lt)\b/gi;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      let val = match[1].replace(',', '.');
+      // Limit value length to prevent crazy numbers
+      if (val.length > 5) continue;
+
+      let unit = match[2].toLowerCase();
+      if (unit === 'l' || unit === 'lt') unit = 'liter';
+      if (unit === 'kg' && parseFloat(val) >= 1) {
+        results.push(parseFloat(val) + "kg");
+      } else {
+        results.push(val + unit);
+      }
+    }
+    return results;
+  };
+
+  const extractQty = (text) => {
+    // 1. Explicit prefixes: default, jumlah, qty, pcs, quantity
+    const m1 = text.match(/(?:default|jumlah|qty|pcs|quantity)\s*[:：]?\s*(\d{1,3})\b/i);
+    if (m1) return parseInt(m1[1]);
+
+    // 2. The 'x' prefix: Only allow for small numbers (usually 1-10) 
+    // to avoid capturing J&T routing codes like "B06 x 698"
+    const mx = text.match(/\bx\s*(\d{1,3})\b/i);
+    if (mx) {
+      const val = parseInt(mx[1]);
+      if (val <= 10) return val;
+    }
+
+    // 3. For trailing numbers, be very strict: only 1-2 digits
+    const m2 = text.match(/\s+(\d{1,2})\s*$/);
+    if (m2) {
+      const val = parseInt(m2[1]);
+      // Blacklist common J&T routing codes that might appear trailing
+      if ([698, 699, 700].includes(val)) return 1;
+      return val;
+    }
+
+    return 1;
+  };
+
+  const noisePatterns = [
+    /product\s*name|nama\s*produk|item\s*name|deskripsi|nama\s*barang/gi,
+    /sku|seller\s*sku|qty/gi,
+    /tokopedia|shopee|lazada|shop/gi,
+    /order\s*id\s*[:：]?\s*\d+/gi,
+    /resi\s*[:：]?\s*[A-Z0-9]+/gi,
+    /weight\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*(KG|kg)/gi,
+    /berat\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*(KG|kg|gr|gram)/gi,
+    /(\d+)\.(\d{3})\s*KG/gi,
+    /qty\s*total\s*[:：]?\s*\d+/gi,
+    /---\s*file\s*\d+\s*---/gi,
+    /penerima|pengirim|jumlah|barang|syarat\s*dan\s*ketentuan/gi,
+    /jalan|blok|no\s*[\d.]+|rt\s*[\d.]+|rw\s*[\d.]+|kel\.|kec\./gi,
+    /www\.[a-z.]+/gi,
+    /\(\+62\)\d+/gi,
+    /\b[A-Z]{2,3}\d{10,20}\b/g, // Specific Resi formats like JX...
+    /\b\d{15,25}\b/g, // Long numeric strings (Order IDs)
+    /\b69[89]\b|\b700\b/g // J&T Routing codes False Positives
+  ];
+
+  for (const block of blocks) {
+    const blockLines = lines.slice(block.startLine, block.endLine + 1);
+    let rawItems = [];
+    let currentBuffer = "";
+
+    for (let i = 0; i < blockLines.length; i++) {
+      const line = blockLines[i];
+      const lower = line.toLowerCase();
+      const normalizedStrip = lower.replace(/[\s:-]+/g, '');
+
+      // Enhanced noise detection for Resi-like strings and metadata
+      const hasLongId = /\b[A-Z]{2,3}\d{10,20}\b/i.test(line) || /\b\d{15,25}\b/.test(line);
+      const isMetadataLine = /intransitby|orderid|resi:|weight:|pe\s*ne\s*rima/i.test(normalizedStrip);
+
+      const isStrongNoise = /syaratdanketentuan|website|jet\.co\.id|jalan|blok|rt[\d.]|rw[\d.]/i.test(normalizedStrip) ||
+        /official\s*store|bitumax\s*official|instagram/i.test(lower) || hasLongId || isMetadataLine;
+
+      const isHeaderOrBanner = /tokopedia|shopee|lazada|shop|orderid|resi:|weight:|berat:|total|qtytotal|---|productname|namaproduk|itemname|deskripsi|namabarang|sellersku|sku|qty|store/i.test(normalizedStrip);
+
+      // Heuristic for metadata like "Default" or "SKU X"
+      const isMetaKeyword = /default|sku\s*\d|qty\s*\d/i.test(lower);
+
+      // IMPORTANT: If the line contains a "strong" product indicator (like BituMax),
+      // we DON'T skip it entirely even if it has noise attributes.
+      const isStrongProductLine = /bitu\s*max|aspal\s*cair|premium\s*asphalt|bitumen|emulsion/i.test(lower);
+
+      if ((isStrongNoise || (isHeaderOrBanner && !isMetaKeyword)) && !isStrongProductLine) {
+        if (currentBuffer) rawItems.push(currentBuffer);
+        currentBuffer = "";
+        continue;
+      }
+
+      let cleaned = line;
+      noisePatterns.forEach(p => { cleaned = cleaned.replace(p, ''); });
+      cleaned = cleaned.trim();
+      if (cleaned.length < 3) continue;
+
+      const isStrongStart = /bitu\s*max|aspal\s*cair|premium\s*asphalt|aspal\s*anti\s*bocor|bitumen|emulsion/i.test(lower);
+      const bufferHasEndMarker = /default|sku/i.test(currentBuffer);
+
+      if (isStrongStart && currentBuffer && bufferHasEndMarker) {
+        rawItems.push(currentBuffer);
+        currentBuffer = cleaned;
+      } else if (!currentBuffer) {
+        currentBuffer = cleaned;
+      } else {
+        currentBuffer += " " + cleaned;
+      }
+    }
+    if (currentBuffer) rawItems.push(currentBuffer);
+
+    let items = rawItems
+      .filter(txt => {
+        const lt = txt.toLowerCase();
+        const hasKeyword = /bitu\s*max|asphalt|bitumen|emulsion|aspal|cair|bocor|rembes|water\s*shield|paint|waterproofing|anti\s*bocor|anti\s*rembes/i.test(lt);
+        const hasStructure = /default|sku\s*\d|qty\s*\d|jumlah\s*[:：]?\s*\d/i.test(lt);
+        const hasSize = /\d+(?:[.,]\d+)?\s*(kg|liter|l|gr|gram|ml|lt)/i.test(lt);
+        return txt.length > 5 && hasKeyword && (hasStructure || hasSize);
+      })
+      .flatMap(txt => {
+        const lt = txt.toLowerCase();
+        const type = /bitu\s*max/i.test(lt) ? 'bitumax' : 'biasa';
+        const qty = extractQty(txt);
+        const rawSizes = extractMultipleSizes(txt);
+        const sizes = [...new Set(rawSizes)];
+
+        if (sizes.length === 0) {
+          return [{ type, size: block.weightLabel, qty }];
+        }
+
+        if (sizes.length > 1 && qty === 1) {
+          return sizes.map(s => ({ type, size: s, qty: 1 }));
+        }
+
+        return [{ type, size: sizes[0], qty }];
+      });
+
+    // --- PER-BLOCK DEDUPLICATION ---
+    // Deduplicate by SIZE + TYPE to allow e.g. "5L Bitumax" and "1L Bitumax"
+    // but prevent OCR double-scans of the exact same product.
+    const itemsByKey = {};
+    items.forEach(item => {
+      const key = `${item.size}|${item.type}`;
+      if (!itemsByKey[key]) {
+        itemsByKey[key] = item;
+      }
+    });
+    items = Object.values(itemsByKey);
+
+    if (items.length > 0) {
+      results.push({ resiWeight: block.weightLabel, items, orderIds: block.orderIds });
+    } else {
+      results.push({ resiWeight: block.weightLabel, items: [{ type: 'biasa', size: block.weightLabel, qty: 1 }], orderIds: block.orderIds });
+    }
+  }
+
+  return results.map(res => ({
+    resiWeight: res.resiWeight,
+    items: res.items,
+    orderIds: res.orderIds
+  }));
+};
+
+

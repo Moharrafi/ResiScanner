@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Resi Scanner</string>
+    <string name="title_activity_main">Resi Scanner</string>
+    <string name="package_name">com.resiscanner.app</string>
+    <string name="custom_url_scheme">com.resiscanner.app</string>
+</resources>

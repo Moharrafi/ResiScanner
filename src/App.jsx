@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, CheckCircle, AlertCircle, RefreshCw, Search, Settings, X, Volume2, Trash2 } from 'lucide-react';
+import { Upload, CheckCircle, AlertCircle, RefreshCw, Search, Settings, X, Volume2, Trash2, History } from 'lucide-react';
 import Scanner from './components/Scanner';
-import { parsePDF, extractResi, extractWeights } from './utils/pdfParser';
+import { parsePDF, extractResi, extractWeights, extractProductName } from './utils/pdfParser';
 import './App.css';
 
 function App() {
@@ -18,12 +18,23 @@ function App() {
     try { return JSON.parse(localStorage.getItem('resi_weightStats') || '{}'); }
     catch { return {}; }
   });
+  const [productStats, setProductStats] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('resi_productStats') || '{"bitumax":{},"biasa":{}}'); }
+    catch { return { bitumax: {}, biasa: {} }; }
+  });
   // ───────────────────────────────────────────────────────────────────
+
+  const [scanHistory, setScanHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('resi_scanHistory') || '[]'); }
+    catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
 
   const [scanning, setScanning] = useState(false);
   const [lastScanned, setLastScanned] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [complete, setComplete] = useState(false);
+  const [androidLoading, setAndroidLoading] = useState(false);
 
   const [extractedText, setExtractedText] = useState("");
   const [showDebug, setShowDebug] = useState(false);
@@ -45,6 +56,8 @@ function App() {
   useEffect(() => { localStorage.setItem('resi_orders', JSON.stringify(orders)); }, [orders]);
   useEffect(() => { localStorage.setItem('resi_duplicates', JSON.stringify(duplicates)); }, [duplicates]);
   useEffect(() => { localStorage.setItem('resi_weightStats', JSON.stringify(weightStats)); }, [weightStats]);
+  useEffect(() => { localStorage.setItem('resi_productStats', JSON.stringify(productStats)); }, [productStats]);
+  useEffect(() => { localStorage.setItem('resi_scanHistory', JSON.stringify(scanHistory)); }, [scanHistory]);
   // ────────────────────────────────────────────────────────────────────
 
   // --- AUDIO LOGIC ---
@@ -57,7 +70,7 @@ function App() {
     gain.connect(ctx.destination);
     osc.frequency.value = 1000;
     osc.type = "sine";
-    gain.gain.value = 0.1;
+    gain.gain.value = 0.4;
     osc.start();
     osc.stop(ctx.currentTime + 0.1);
   };
@@ -68,7 +81,7 @@ function App() {
     gain.connect(ctx.destination);
     osc.frequency.value = 200;
     osc.type = "sawtooth";
-    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.setValueAtTime(0.6, ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.3);
     osc.start();
     osc.stop(ctx.currentTime + 0.3);
@@ -87,7 +100,7 @@ function App() {
     osc2.frequency.setValueAtTime(659.25, ctx.currentTime);
     osc2.type = "sine";
     gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+    gain.gain.linearRampToValueAtTime(1.0, ctx.currentTime + 0.05);
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
     osc1.start(); osc2.start();
     osc1.stop(ctx.currentTime + 0.5); osc2.stop(ctx.currentTime + 0.5);
@@ -100,7 +113,7 @@ function App() {
     osc.type = "triangle";
     osc.frequency.setValueAtTime(150, ctx.currentTime);
     osc.frequency.linearRampToValueAtTime(50, ctx.currentTime + 0.3);
-    gain.gain.setValueAtTime(0.5, ctx.currentTime);
+    gain.gain.setValueAtTime(1.0, ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.3);
     osc.start();
     osc.stop(ctx.currentTime + 0.3);
@@ -114,8 +127,8 @@ function App() {
     gain.connect(ctx.destination);
     osc.type = "square";
     osc.frequency.setValueAtTime(900, ctx.currentTime);
-    osc.frequency.linearRampToValueAtTime(1800, ctx.currentTime + 0.1); // Coin sweep
-    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(1800, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
     osc.start();
     osc.stop(ctx.currentTime + 0.2);
@@ -127,8 +140,8 @@ function App() {
     gain.connect(ctx.destination);
     osc.type = "square";
     osc.frequency.setValueAtTime(150, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(20, ctx.currentTime + 0.3); // Crunch
-    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(20, ctx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.6, ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
     osc.start();
     osc.stop(ctx.currentTime + 0.3);
@@ -143,7 +156,7 @@ function App() {
     osc.type = "sine";
     osc.frequency.setValueAtTime(440, ctx.currentTime);
     gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.1);
+    gain.gain.linearRampToValueAtTime(0.6, ctx.currentTime + 0.1);
     gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
     osc.start();
     osc.stop(ctx.currentTime + 0.4);
@@ -153,9 +166,9 @@ function App() {
     const gain = ctx.createGain();
     osc.connect(gain);
     gain.connect(ctx.destination);
-    osc.type = "sine"; // Softer than saw/square
+    osc.type = "sine";
     osc.frequency.setValueAtTime(120, ctx.currentTime);
-    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.setValueAtTime(0.6, ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
     osc.start();
     osc.stop(ctx.currentTime + 0.4);
@@ -169,10 +182,9 @@ function App() {
     gain.connect(ctx.destination);
     osc.type = "sawtooth";
     osc.frequency.setValueAtTime(880, ctx.currentTime);
-    // Tremolo effect simulation
-    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
     gain.gain.setValueAtTime(0, ctx.currentTime + 0.05);
-    gain.gain.setValueAtTime(0.1, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime + 0.1);
     gain.gain.setValueAtTime(0, ctx.currentTime + 0.15);
     osc.start();
     osc.stop(ctx.currentTime + 0.2);
@@ -184,7 +196,7 @@ function App() {
     gain.connect(ctx.destination);
     osc.type = "sawtooth";
     osc.frequency.setValueAtTime(80, ctx.currentTime);
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.setValueAtTime(0.8, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
     osc.start();
     osc.stop(ctx.currentTime + 0.3);
@@ -266,18 +278,94 @@ function App() {
           setDuplicates(prev => [...new Set([...prev, ...newDuplicates])]);
         }
 
-        // --- Weight Logic ---
-        // We need to re-extract weights from the FULL combined text of this batch to be safe, 
-        // or we accumulate from the loop. 
-        // Actually, let's extract from the allText we just built.
-        const foundWeights = extractWeights(allText);
+        // --- Weight Logic + Product Type per Size ---
+        // Build detailed stats
+        const foundProducts = extractProductName(allText);
 
         setWeightStats(prev => {
           const newStats = { ...prev };
-          foundWeights.forEach(w => {
-            newStats[w] = (newStats[w] || 0) + 1;
+          foundProducts.forEach(({ resiWeight, items }) => {
+            const bItems = items.filter(i => i.type === 'bitumax');
+            const sItems = items.filter(i => i.type === 'biasa');
+
+            // Generate breakdown: e.g., "5B+5" for 5kg Bitumax + 5kg Biasa
+            const parts = [];
+            bItems.forEach(item => {
+              const s = item.size.replace(/kg|liter|l/gi, '');
+              const q = item.qty || 1;
+              parts.push(q > 1 ? `${s}B*${q}` : `${s}B`);
+            });
+            sItems.forEach(item => {
+              const s = item.size.replace(/kg|liter|l/gi, '');
+              const q = item.qty || 1;
+              parts.push(q > 1 ? `${s}*${q}` : `${s}`);
+            });
+            const breakdown = parts.join('+');
+            // Show breakdown in parentheses only if there are multiple item lines
+            const label = (breakdown && items.length > 1) ? `${resiWeight} (${breakdown})` : resiWeight;
+
+            if (!newStats[label]) newStats[label] = { total: 0, bitumax: 0, biasa: 0 };
+            if (typeof newStats[label] === 'number') {
+              newStats[label] = { total: newStats[label], bitumax: 0, biasa: 0 };
+            }
+            newStats[label].total += 1;
+            newStats[label].bitumax += bItems.reduce((acc, curr) => acc + (curr.qty || 1), 0);
+            newStats[label].biasa += sItems.reduce((acc, curr) => acc + (curr.qty || 1), 0);
           });
+
+          // Also handle standalone weights if no product data was matched for some reason
+          // But usually foundProducts covers all blocks with weights.
           return newStats;
+        });
+
+        // --- Product Type Stats ---
+        if (foundProducts.length > 0) {
+          setProductStats(prev => {
+            const newStats = {
+              bitumax: { ...(prev.bitumax || {}) },
+              biasa: { ...(prev.biasa || {}) }
+            };
+            foundProducts.forEach(({ items }) => {
+              items.forEach(item => {
+                const label = item.size;
+                const qty = item.qty || 1;
+                if (item.type === 'bitumax') {
+                  newStats.bitumax[label] = (newStats.bitumax[label] || 0) + qty;
+                } else {
+                  newStats.biasa[label] = (newStats.biasa[label] || 0) + qty;
+                }
+              });
+            });
+            return newStats;
+          });
+        }
+
+        // 3. Create a weight map from found products (with breakdown if multiple items)
+        const weightMap = {};
+        foundProducts.forEach(fp => {
+          if (!fp.orderIds || fp.orderIds.length === 0) return;
+
+          // Build breakdown string (e.g. "5B+5") only if multiple item lines
+          let label = fp.resiWeight;
+          if (fp.items && fp.items.length > 1) {
+            const parts = [];
+            fp.items.filter(i => i.type === 'bitumax').forEach(item => {
+              const s = item.size.replace(/kg|liter|l/gi, '');
+              const q = item.qty || 1;
+              parts.push(q > 1 ? `${s}B*${q}` : `${s}B`);
+            });
+            fp.items.filter(i => i.type === 'biasa').forEach(item => {
+              const s = item.size.replace(/kg|liter|l/gi, '');
+              const q = item.qty || 1;
+              parts.push(q > 1 ? `${s}*${q}` : `${s}`);
+            });
+            const breakdown = parts.join('+');
+            if (breakdown) label = `${fp.resiWeight} (${breakdown})`;
+          }
+
+          fp.orderIds.forEach(id => {
+            weightMap[id] = label;
+          });
         });
 
         // Merge with existing orders, avoiding duplicates for the main list
@@ -287,7 +375,11 @@ function App() {
           const existingIds = new Set(prevOrders.map(o => o.id));
           const newOrders = uniqueIds
             .filter(id => !existingIds.has(id))
-            .map(id => ({ id, scanned: false }));
+            .map(id => ({
+              id,
+              scanned: false,
+              weight: weightMap[id] || "1kg" // Default to 1kg if missing
+            }));
 
           return [...prevOrders, ...newOrders];
         });
@@ -372,9 +464,51 @@ function App() {
     checkSharedFile();
   }, []);
 
+  // Handle Android VIEW Intent (PDF opened from file manager / other apps)
+  useEffect(() => {
+    const handleAndroidPdf = async (base64, filename) => {
+      try {
+        setAndroidLoading(false); // loading sudah ditangani oleh ocrProgress
+        const byteChars = atob(base64);
+        const byteNums = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) {
+          byteNums[i] = byteChars.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNums);
+        const blob = new Blob([byteArray], { type: 'application/pdf' });
+        const file = new File([blob], filename || 'intent.pdf', { type: 'application/pdf' });
+        await processFiles([file]);
+      } catch (err) {
+        console.error('Error processing Android intent PDF:', err);
+        setErrorMsg('Gagal membuka file dari intent Android.');
+      } finally {
+        setAndroidLoading(false);
+      }
+    };
+
+    // Register global loading control functions (called from MainActivity)
+    window.showPdfLoading = () => setAndroidLoading(true);
+    window.hidePdfLoading = () => setAndroidLoading(false);
+    window.onAndroidPdfIntent = handleAndroidPdf;
+
+    // Handle if intent arrived before React was ready
+    if (window._pendingAndroidPdf) {
+      const { base64, filename } = window._pendingAndroidPdf;
+      window._pendingAndroidPdf = null;
+      handleAndroidPdf(base64, filename);
+    }
+
+    return () => {
+      window.onAndroidPdfIntent = null;
+      window.showPdfLoading = null;
+      window.hidePdfLoading = null;
+    };
+  }, []);
+
   const handleScan = (code) => {
     // Basic normalization: remove whitespace
     const cleanCode = code.trim();
+    const timestamp = new Date().toISOString();
 
     // Check if code exists in orders
     const index = orders.findIndex(o => o.id === cleanCode);
@@ -383,21 +517,26 @@ function App() {
       if (orders[index].scanned) {
         // Already scanned
         playError();
-        setLastScanned(`${cleanCode} (Already Scanned)`);
+        const weightText = orders[index].weight ? ` (${orders[index].weight})` : "";
+        setLastScanned(`${cleanCode}${weightText} (Already Scanned)`);
+        setScanHistory(prev => [{ id: cleanCode, timestamp, status: 'duplicate' }, ...prev]);
       } else {
         // Success
         playSuccess();
         const newOrders = [...orders];
         newOrders[index].scanned = true;
         setOrders(newOrders);
-        setLastScanned(`${cleanCode} - Checked!`);
+        const weightText = orders[index].weight ? ` (${orders[index].weight})` : "";
+        setLastScanned(`${cleanCode}${weightText} - Checked!`);
         setErrorMsg("");
+        setScanHistory(prev => [{ id: cleanCode, timestamp, status: 'success' }, ...prev]);
       }
     } else {
       // Not found
       playError();
       setErrorMsg(`Code ${cleanCode} not found in list.`);
       setLastScanned(null);
+      setScanHistory(prev => [{ id: cleanCode, timestamp, status: 'not_found' }, ...prev]);
     }
   };
 
@@ -416,6 +555,16 @@ function App() {
 
   return (
     <div className="container">
+      {/* Android PDF Loading Overlay */}
+      {androidLoading && (
+        <div className="android-loading-overlay">
+          <div className="android-loading-box">
+            <div className="android-spinner" />
+            <p>Memuat PDF...</p>
+          </div>
+        </div>
+      )}
+
       <header className="app-header">
         <div className="header-top">
           <div className="header-title">
@@ -449,7 +598,7 @@ function App() {
 
       <main>
         {/* Analysis / Report Section */}
-        {(duplicates.length > 0 || Object.keys(weightStats).length > 0) && (
+        {(orders.length > 0 || duplicates.length > 0 || Object.keys(weightStats).length > 0 || (productStats.bitumax && Object.keys(productStats.bitumax).length > 0) || (productStats.biasa && Object.keys(productStats.biasa).length > 0)) && (
           <div className="analysis-section" style={{ marginBottom: '1rem' }}>
             <button
               onClick={() => setShowAnalysis(!showAnalysis)}
@@ -494,23 +643,119 @@ function App() {
                   </div>
                 )}
 
-                {/* Weight Stats */}
+                {/* Weight Stats with Bitumax/Biasa breakdown */}
                 {Object.keys(weightStats).length > 0 && (
                   <div>
                     <h4 style={{ color: '#0f172a', marginBottom: '0.5rem' }}>Product Quantity by Size:</h4>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '0.5rem' }}>
-                      {Object.entries(weightStats).map(([weight, count]) => (
-                        <div key={weight} style={{
-                          padding: '0.5rem',
-                          background: '#f1f5f9',
-                          borderRadius: '0.25rem',
-                          textAlign: 'center'
-                        }}>
-                          <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{count}</div>
-                          <div style={{ fontSize: '0.8rem', color: '#64748b', textTransform: 'uppercase' }}>{weight}</div>
-                        </div>
-                      ))}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '0.5rem' }}>
+                      {Object.entries(weightStats).map(([weight, data]) => {
+                        // Support legacy format (number) and new format (object)
+                        const total = typeof data === 'number' ? data : data.total;
+                        const bitumax = typeof data === 'number' ? 0 : (data.bitumax || 0);
+                        const biasa = typeof data === 'number' ? 0 : (data.biasa || 0);
+                        const hasBitumax = bitumax > 0;
+                        const hasBiasa = biasa > 0;
+                        return (
+                          <div key={weight} style={{
+                            padding: '0.5rem',
+                            background: hasBitumax && !hasBiasa ? '#fffbeb' : hasBiasa && !hasBitumax ? '#eff6ff' : '#f1f5f9',
+                            border: hasBitumax && !hasBiasa ? '1px solid #fbbf24' : hasBiasa && !hasBitumax ? '1px solid #93c5fd' : '1px solid #e2e8f0',
+                            borderRadius: '0.35rem',
+                            textAlign: 'center'
+                          }}>
+                            <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{total}</div>
+                            <div style={{ fontSize: '0.8rem', color: '#64748b', textTransform: 'uppercase', marginBottom: hasBitumax || hasBiasa ? '0.3rem' : 0 }}>{weight}</div>
+                            {(hasBitumax || hasBiasa) && (
+                              <div style={{ display: 'flex', justifyContent: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
+                                {hasBitumax && (
+                                  <span style={{
+                                    fontSize: '0.65rem', fontWeight: 600,
+                                    background: '#fef3c7', color: '#92400e',
+                                    padding: '1px 6px', borderRadius: '999px',
+                                    border: '1px solid #fbbf24'
+                                  }}>🟠 {bitumax}</span>
+                                )}
+                                {hasBiasa && (
+                                  <span style={{
+                                    fontSize: '0.65rem', fontWeight: 600,
+                                    background: '#dbeafe', color: '#1e40af',
+                                    padding: '1px 6px', borderRadius: '999px',
+                                    border: '1px solid #93c5fd'
+                                  }}>🔵 {biasa}</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
+                  </div>
+                )}
+
+                {/* Product Type Stats: Bitumax vs Biasa */}
+                {((productStats.bitumax && Object.keys(productStats.bitumax).length > 0) || (productStats.biasa && Object.keys(productStats.biasa).length > 0)) && (
+                  <div style={{ marginTop: '1rem' }}>
+                    <h4 style={{ color: '#0f172a', marginBottom: '0.75rem' }}>Produk per Jenis:</h4>
+
+                    {/* Bitumax */}
+                    {productStats.bitumax && Object.keys(productStats.bitumax).length > 0 && (
+                      <div style={{ marginBottom: '0.75rem' }}>
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: '0.4rem',
+                          marginBottom: '0.4rem', fontWeight: 600, color: '#b45309', fontSize: '0.9rem'
+                        }}>
+                          🟠 Bitumax
+                          <span style={{
+                            background: '#fef3c7', border: '1px solid #fbbf24',
+                            borderRadius: '999px', padding: '0 0.5rem',
+                            fontSize: '0.8rem', fontWeight: 700
+                          }}>
+                            {Object.values(productStats.bitumax).reduce((a, b) => a + b, 0)} pcs
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))', gap: '0.4rem' }}>
+                          {Object.entries(productStats.bitumax).map(([size, count]) => (
+                            <div key={size} style={{
+                              padding: '0.4rem 0.5rem', background: '#fffbeb',
+                              border: '1px solid #fbbf24', borderRadius: '0.35rem', textAlign: 'center'
+                            }}>
+                              <div style={{ fontWeight: 'bold', fontSize: '1rem', color: '#92400e' }}>{count}</div>
+                              <div style={{ fontSize: '0.75rem', color: '#b45309', textTransform: 'uppercase' }}>{size}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Biasa */}
+                    {productStats.biasa && Object.keys(productStats.biasa).length > 0 && (
+                      <div>
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: '0.4rem',
+                          marginBottom: '0.4rem', fontWeight: 600, color: '#1d4ed8', fontSize: '0.9rem'
+                        }}>
+                          🔵 Biasa
+                          <span style={{
+                            background: '#eff6ff', border: '1px solid #93c5fd',
+                            borderRadius: '999px', padding: '0 0.5rem',
+                            fontSize: '0.8rem', fontWeight: 700
+                          }}>
+                            {Object.values(productStats.biasa).reduce((a, b) => a + b, 0)} pcs
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))', gap: '0.4rem' }}>
+                          {Object.entries(productStats.biasa).map(([size, count]) => (
+                            <div key={size} style={{
+                              padding: '0.4rem 0.5rem', background: '#eff6ff',
+                              border: '1px solid #93c5fd', borderRadius: '0.35rem', textAlign: 'center'
+                            }}>
+                              <div style={{ fontWeight: 'bold', fontSize: '1rem', color: '#1e40af' }}>{count}</div>
+                              <div style={{ fontSize: '0.75rem', color: '#1d4ed8', textTransform: 'uppercase' }}>{size}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -630,6 +875,8 @@ function App() {
                 setOrders([]);
                 setDuplicates([]);
                 setWeightStats({});
+                setProductStats({ bitumax: {}, biasa: {} });
+                setScanHistory([]);
                 setComplete(false);
                 setLastScanned(null);
                 setExtractedText("");
@@ -638,6 +885,8 @@ function App() {
                 localStorage.removeItem('resi_orders');
                 localStorage.removeItem('resi_duplicates');
                 localStorage.removeItem('resi_weightStats');
+                localStorage.removeItem('resi_productStats');
+                localStorage.removeItem('resi_scanHistory');
               }
             }}
             style={{
@@ -658,6 +907,50 @@ function App() {
           >
             <Trash2 size={16} /> Clear List
           </button>
+        )}
+
+        {/* Scan History Panel */}
+        {scanHistory.length > 0 && (
+          <div className="history-section">
+            <button
+              className="history-toggle-btn"
+              onClick={() => setShowHistory(!showHistory)}
+            >
+              <History size={16} />
+              <span>History Scan ({scanHistory.length})</span>
+              <span className="history-chevron">{showHistory ? '▲' : '▼'}</span>
+            </button>
+
+            {showHistory && (
+              <div className="history-list">
+                <div className="history-list-header">
+                  <span>Riwayat Scan</span>
+                  <button
+                    className="history-clear-btn"
+                    onClick={() => {
+                      setScanHistory([]);
+                      localStorage.removeItem('resi_scanHistory');
+                    }}
+                  >
+                    <Trash2 size={13} /> Hapus History
+                  </button>
+                </div>
+                <ul className="history-items">
+                  {scanHistory.map((entry, i) => (
+                    <li key={i} className={`history-item history-${entry.status}`}>
+                      <span className={`history-badge badge-${entry.status}`}>
+                        {entry.status === 'success' ? '✓' : entry.status === 'duplicate' ? '⟳' : '✗'}
+                      </span>
+                      <span className="history-id">{entry.id}</span>
+                      <span className="history-time">
+                        {new Date(entry.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         )}
 
         <label className="upload-btn">
@@ -722,21 +1015,77 @@ function App() {
                 </div>
               </div>
 
-              <div className="setting-group">
-                <label>Test Audio</label>
-                <div className="action-row">
-                  <button className="test-btn success" onClick={playSuccess}>
-                    <Volume2 size={16} /> Test Success
+              <div className="setting-group" style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #e2e8f0' }}>
+                <label style={{ color: '#dc2626' }}>System / Troubleshooting</label>
+                <div style={{ marginTop: '10px' }}>
+                  <button
+                    className="test-btn"
+                    style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca', width: '100%', justifyContent: 'center' }}
+                    onClick={() => {
+                      if (window.confirm("Ini akan menghapus semua cache, service worker, dan data lokal, lalu merestart aplikasi. Lanjutkan?")) {
+                        // 1. Clear Service Workers
+                        if ('serviceWorker' in navigator) {
+                          navigator.serviceWorker.getRegistrations().then(regs => {
+                            regs.forEach(reg => reg.unregister());
+                          });
+                        }
+                        // 2. Clear Caches
+                        if ('caches' in window) {
+                          caches.keys().then(names => {
+                            names.forEach(name => caches.delete(name));
+                          });
+                        }
+                        // 3. Clear LocalStorage
+                        localStorage.clear();
+                        // 4. Force Reload
+                        window.location.reload(true);
+                      }
+                    }}
+                  >
+                    <RefreshCw size={16} /> Force Update / Clear All Cache
                   </button>
-                  <button className="test-btn error" onClick={playError}>
-                    <Volume2 size={16} /> Test Error
-                  </button>
+                  <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '5px' }}>
+                    Gunakan jika perubahan fitur tidak muncul atau aplikasi terasa lambat.
+                  </p>
                 </div>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      <footer style={{ marginTop: '2rem', padding: '1rem', textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8' }}>
+        &copy; 2024 Resi Scanner Analysis Tools
+        <div style={{ marginTop: '1rem' }}>
+          <button
+            id="debug-toggle"
+            onClick={() => setShowDebug(!showDebug)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#94a3b8',
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              fontSize: '0.75rem'
+            }}
+          >
+            {showDebug ? 'Hide Debug Info' : 'Show Debug Info'}
+          </button>
+        </div>
+        {showDebug && (
+          <div style={{ marginTop: '1rem', textAlign: 'left', background: '#f1f5f9', padding: '1rem', borderRadius: '0.5rem', border: '1px solid #cbd5e1' }}>
+            <h5 style={{ marginBottom: '0.5rem', color: '#475569' }}>Raw Extracted Text:</h5>
+            <textarea
+              readOnly
+              value={extractedText}
+              style={{ width: '100%', height: '200px', fontSize: '0.75rem', fontFamily: 'monospace', padding: '0.5rem' }}
+            />
+            <p style={{ marginTop: '0.5rem', fontSize: '0.7rem' }}>
+              Copy this text and send it to support if items are not being detected correctly.
+            </p>
+          </div>
+        )}
+      </footer>
     </div>
   );
 }
