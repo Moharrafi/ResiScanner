@@ -1,29 +1,77 @@
-# Welcome to your Lovable project
+# 📦 ResiScanner - PDF Product & Size Detector
 
-This project was built with [Lovable](https://lovable.dev).
+Aplikasi web dan Android untuk membaca, mendeteksi, dan merekapitulasi data pesanan dari file resi PDF secara otomatis. Terintegrasi langsung dengan database **Aiven MySQL** untuk manajemen stok produk dan riwayat inventarisasi.
 
-## Build with Lovable
+---
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
+### ✨ Fitur Utama
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
+- **📄 Ekstraksi & Deteksi Resi PDF**:
+  - Memproses satu atau beberapa file PDF pesanan sekaligus.
+  - Membaca nama produk, varian ukuran, dan kuantitas (`qty`) secara otomatis.
+- **⚖️ Penyatuan Ukuran (Unit Normalization)**:
+  - Otomatis menyatukan satuan `Liter` (`L`, `1L`, `5L`) ke dalam satuan `KG` (`1KG`, `5KG`) agar rekapitulasi stok konsisten.
+- **📊 Tampilan Rekap Ringkas & Mobile-Friendly**:
+  - Rekap per Varian Ukuran (Ukuran 1, 5, 20, 25) dengan kartu akordeon (*Minimize by default* untuk tampilan HP yang rapi).
+  - Rekap per Produk Unik dan tabel detail baris mentah.
+- **💾 Sinkronisasi Database MySQL (Aiven Cloud)**:
+  - Menyimpan transaksi **Stok Keluar (OUT / Resi Penjualan)** maupun **Stok Masuk (IN / Restock)** ke database `inventory`.
+  - **Perlindungan Stok**: Kueri menggunakan `GREATEST(0, stock - qty)` sehingga stok **tidak akan pernah bernilai negatif**.
+  - Pilihan tanggal transaksi khusus dan penyesuaian Sales Channel / Supplier Name (`Gudang`).
+  - Generator script kueri SQL otomatis & fitur unduh file `.sql`.
+- **📱 Aplikasi Android Native (Capacitor)**:
+  - Dilengkapi file installer **`app-debug.apk`**.
+  - **Fitur "Buka Dengan / Open With PDF"**: Membuka file PDF langsung dari WhatsApp, File Manager, Telegram, atau Chrome menggunakan aplikasi ini.
 
-## Development
+---
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+### 🚀 Cara Menjalankan Project (Development)
 
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+#### Persyaratan:
+- Node.js (v18+) & npm
+
+#### Langkah-langkah:
+1. **Clone repositori**:
+   ```bash
+   git clone https://github.com/Moharrafi/ResiScanner.git
+   cd ResiScanner
+   ```
+
+2. **Install dependency**:
+   ```bash
+   npm install --legacy-peer-deps
+   ```
+
+3. **Jalankan dev server**:
+   ```bash
+   npm run dev
+   ```
+   Buka `http://localhost:3000` di browser.
+
+---
+
+### 📱 Build Aplikasi Android (APK)
+
+Project ini menggunakan **Capacitor** untuk dikompilasi menjadi aplikasi Android:
+
+```bash
+# 1. Build aset web production
+npm run build
+
+# 2. Sinkronisasi aset ke folder Android
+npx cap sync android
+
+# 3. Kompilasi APK (Windows)
+cd android
+.\gradlew.bat assembleDebug
 ```
+Hasil file APK tersimpan di `android/app/build/outputs/apk/debug/app-debug.apk` dan di-copy ke folder utama `app-debug.apk`.
 
-## Built with
+---
 
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS
+### 🛠️ Tech Stack
+
+- **Framework & UI**: React 19, TypeScript, TanStack Start (Nitro), TailwindCSS v4, Lucide Icons, Shadcn UI
+- **PDF Parser**: PDF.js (`pdfjs-dist`)
+- **Database**: MySQL2 & Aiven Cloud MySQL (`inventory` DB)
+- **Mobile Native**: Capacitor v7 (Android SDK 35/36)
