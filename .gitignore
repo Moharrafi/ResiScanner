@@ -1,0 +1,14 @@
+node_modules
+.output
+.tanstack
+.wrangler
+dist
+build
+.env
+.env.local
+*.log
+android/app/build
+android/build
+android/.gradle
+android/.idea
+android/local.properties
