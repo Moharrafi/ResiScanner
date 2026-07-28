@@ -5,6 +5,8 @@
 //     React/TanStack dedupe, error logger plugins, and sandbox detection (port/host/strictPort).
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import fs from "node:fs";
+import path from "node:path";
 
 export default defineConfig({
   tanstackStart: {
@@ -14,6 +16,24 @@ export default defineConfig({
   },
   nitro: {
     preset: process.env.NITRO_PRESET || (process.env.VERCEL ? "vercel" : "vercel"),
+    hooks: {
+      compiled() {
+        const outputDir = path.resolve(".vercel/output");
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true });
+        }
+        const configPath = path.join(outputDir, "config.json");
+        const vercelConfig = {
+          version: 3,
+          routes: [
+            { handle: "filesystem" },
+            { src: "/(.*)", dest: "/__server" }
+          ]
+        };
+        fs.writeFileSync(configPath, JSON.stringify(vercelConfig, null, 2));
+        console.log("[nitro-hook] Successfully generated .vercel/output/config.json for Vercel!");
+      },
+    },
   },
 });
 
