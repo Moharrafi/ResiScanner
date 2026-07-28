@@ -78,6 +78,7 @@ type FileEntry = {
 function Index() {
   const [loading, setLoading] = useState(false);
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [showAllFiles, setShowAllFiles] = useState(false);
   // Open size card accordions; empty means all are MINIMIZED by default on initial load
   const [openSizes, setOpenSizes] = useState<Record<string, boolean>>({});
   // Save DB Modal state
@@ -427,27 +428,50 @@ ${inventoryValues.join(",\n")};`
               </div>
 
               {/* FILE BADGES */}
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {files.map((f, i) => (
-                  <Badge
-                    key={i}
-                    variant="secondary"
-                    className="gap-1 pl-2 pr-1 py-1 text-[11px] font-normal max-w-full"
-                  >
-                    <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate max-w-[140px] sm:max-w-[200px]">{f.name}</span>
-                    <span className="tabular-nums font-semibold text-muted-foreground">
-                      · {f.rows.reduce((s, r) => s + r.qty, 0)}
-                    </span>
-                    <button
-                      onClick={() => removeFile(i)}
-                      className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full hover:bg-background/80"
-                      aria-label={`Hapus ${f.name}`}
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                {(showAllFiles ? files : files.slice(0, 4)).map((f, i) => {
+                  const actualIdx = showAllFiles ? i : files.findIndex((file) => file === f);
+                  const totalFileQty = f.rows.reduce((s, r) => s + r.qty, 0);
+                  return (
+                    <Badge
+                      key={actualIdx}
+                      variant="outline"
+                      className="gap-1.5 pl-2.5 pr-1.5 py-1 text-xs font-normal bg-background/80 hover:bg-muted/60 border-border/80 rounded-xl transition-all shadow-2xs group"
                     >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
-                ))}
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-primary/70 group-hover:text-primary" />
+                      <span className="truncate max-w-[130px] sm:max-w-[180px] font-medium">{f.name}</span>
+                      <span className="tabular-nums font-bold text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-md">
+                        {totalFileQty}
+                      </span>
+                      <button
+                        onClick={() => removeFile(actualIdx >= 0 ? actualIdx : i)}
+                        className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/15 transition-colors"
+                        aria-label={`Hapus ${f.name}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  );
+                })}
+
+                {files.length > 4 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAllFiles((prev) => !prev)}
+                    className="h-7 text-xs text-primary font-bold gap-1 px-2.5 rounded-xl hover:bg-primary/10 transition-all border border-primary/20 bg-primary/5 cursor-pointer"
+                  >
+                    {showAllFiles ? (
+                      <>
+                        Sembunyikan <ChevronUp className="h-3.5 w-3.5" />
+                      </>
+                    ) : (
+                      <>
+                        +{files.length - 4} file lainnya <ChevronDown className="h-3.5 w-3.5" />
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>
