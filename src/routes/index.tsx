@@ -48,6 +48,7 @@ import {
   type ProductRow,
 } from "@/lib/pdf-parser";
 import { DB_CONFIG } from "@/lib/db";
+import { saveTransactionToDbFn } from "@/lib/db-actions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -83,6 +84,7 @@ function Index() {
   const [openSizes, setOpenSizes] = useState<Record<string, boolean>>({});
   // Save DB Modal state
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [isSavingDb, setIsSavingDb] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // Selected date for database entry (default: today YYYY-MM-DD)
@@ -274,7 +276,33 @@ ${inventoryValues.join(",\n")};`
 `;
   }, [targetProductName, mappedStandardSizes, saveDate, salesChannel, actionType]);
 
-  const handleDownloadAndSaveSql = () => {
+  const handleDirectSaveToDb = async () => {
+    setIsSavingDb(true);
+    try {
+      const res = await saveTransactionToDbFn({
+        data: {
+          targetProductName,
+          saveDate,
+          actionType,
+          salesChannel,
+          mappedSizes: mappedStandardSizes,
+        },
+      });
+      if (res.success) {
+        toast.success(res.message);
+        setIsSaveModalOpen(false);
+      } else {
+        toast.error(res.message);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Gagal terhubung ke server database Aiven.");
+    } finally {
+      setIsSavingDb(false);
+    }
+  };
+
+  const handleDownloadSqlFile = () => {
     const filename = `inventory_${actionType}_${saveDate}_${Date.now()}.sql`;
     const blob = new Blob([generatedSql], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -285,8 +313,7 @@ ${inventoryValues.join(",\n")};`
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    toast.success(`Data (${actionType.toUpperCase()}) berhasil disimpan & file SQL (${filename}) telah dibuat!`);
-    setIsSaveModalOpen(false);
+    toast.success(`File SQL (${filename}) berhasil diunduh!`);
   };
 
   const handleCopySql = async () => {
@@ -763,32 +790,48 @@ ${inventoryValues.join(",\n")};`
             </div>
           </div>
 
-          {/* SINGLE MAIN ACTION BUTTON */}
+          {/* MAIN ACTION BUTTONS */}
           <div className="pt-2 space-y-2">
             <Button
-              onClick={handleDownloadAndSaveSql}
-              className="w-full font-bold text-xs sm:text-sm gap-2 h-11 rounded-xl shadow-md"
+              onClick={handleDirectSaveToDb}
+              disabled={isSavingDb}
+              className="w-full font-bold text-xs sm:text-sm gap-2 h-11 rounded-xl shadow-md cursor-pointer"
               style={{ background: "var(--gradient-primary)" }}
             >
-              <Save className="h-4 w-4" /> Simpan & Ekspor ke DB Inventory ({saveDate})
+              {isSavingDb ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Menyimpan ke DB Aiven...
+                </>
+              ) : (
+                <>
+                  <Database className="h-4 w-4" /> Simpan Langsung ke DB Inventory ({saveDate})
+                </>
+              )}
             </Button>
 
-            <div className="flex gap-2">
+            <div className="grid grid-cols-3 gap-2">
+              <Button
+                variant="outline"
+                onClick={handleDownloadSqlFile}
+                className="font-bold text-xs gap-1.5 h-9 rounded-xl border-border/80 cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5" /> Unduh .SQL
+              </Button>
               <Button
                 variant="outline"
                 onClick={handleCopySql}
-                className="flex-1 font-bold text-xs gap-1.5 h-9 rounded-xl border-border/80"
+                className="font-bold text-xs gap-1.5 h-9 rounded-xl border-border/80 cursor-pointer"
               >
-                {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
-                {copied ? "Query Disalin!" : "Salin Query MySQL"}
+                {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? "Disalin!" : "Salin Query"}
               </Button>
               <Button
                 variant="secondary"
                 asChild
-                className="flex-1 text-xs font-semibold gap-1.5 h-9 rounded-xl"
+                className="text-xs font-semibold gap-1.5 h-9 rounded-xl"
               >
                 <a href="https://inventoryaspal.vercel.app/" target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="h-3.5 w-3.5 text-primary" /> Buka App Inventory
+                  <ExternalLink className="h-3.5 w-3.5 text-primary" /> Buka App
                 </a>
               </Button>
             </div>
