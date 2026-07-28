@@ -20,16 +20,32 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Intent intent = getIntent();
+        if (isPdfIntent(intent)) {
+            handleIncomingIntent(intent);
+            // Clear intent data so Capacitor does not attempt to navigate the WebView to content:// URI as a URL path
+            intent.setData(null);
+        }
         super.onCreate(savedInstanceState);
         setupJavascriptBridge();
-        handleIncomingIntent(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
+        if (isPdfIntent(intent)) {
+            handleIncomingIntent(intent);
+            intent.setData(null);
+        }
         super.onNewIntent(intent);
-        setIntent(intent);
-        handleIncomingIntent(intent);
+    }
+
+    private boolean isPdfIntent(Intent intent) {
+        if (intent == null) return false;
+        String action = intent.getAction();
+        String type = intent.getType();
+        return Intent.ACTION_VIEW.equals(action) ||
+               (Intent.ACTION_SEND.equals(action) && type != null && type.contains("pdf")) ||
+               (Intent.ACTION_SEND_MULTIPLE.equals(action) && type != null && type.contains("pdf"));
     }
 
     private void setupJavascriptBridge() {
@@ -83,7 +99,6 @@ public class MainActivity extends BridgeActivity {
             }
 
             runOnUiThread(() -> {
-                // Try immediate flush and delayed flush to ensure webview receives it
                 flushPendingQueue();
                 if (getBridge() != null && getBridge().getWebView() != null) {
                     getBridge().getWebView().postDelayed(this::flushPendingQueue, 1500);
