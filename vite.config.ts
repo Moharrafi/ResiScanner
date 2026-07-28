@@ -22,6 +22,8 @@ export default defineConfig({
         if (!fs.existsSync(outputDir)) {
           fs.mkdirSync(outputDir, { recursive: true });
         }
+
+        // 1. Generate root config.json
         const configPath = path.join(outputDir, "config.json");
         const vercelConfig = {
           version: 3,
@@ -31,7 +33,28 @@ export default defineConfig({
           ]
         };
         fs.writeFileSync(configPath, JSON.stringify(vercelConfig, null, 2));
-        console.log("[nitro-hook] Successfully generated .vercel/output/config.json for Vercel!");
+        console.log("[nitro-hook] Successfully generated .vercel/output/config.json!");
+
+        // 2. Generate .vc-config.json for server functions
+        const functionsDir = path.join(outputDir, "functions");
+        if (fs.existsSync(functionsDir)) {
+          const entries = fs.readdirSync(functionsDir);
+          for (const entry of entries) {
+            if (entry.endsWith(".func")) {
+              const funcDir = path.join(functionsDir, entry);
+              if (fs.statSync(funcDir).isDirectory()) {
+                const vcConfigPath = path.join(funcDir, ".vc-config.json");
+                const vcConfig = {
+                  runtime: "nodejs20.x",
+                  handler: "index.mjs",
+                  launcherType: "Nodejs"
+                };
+                fs.writeFileSync(vcConfigPath, JSON.stringify(vcConfig, null, 2));
+                console.log(`[nitro-hook] Successfully generated ${vcConfigPath}!`);
+              }
+            }
+          }
+        }
       },
     },
   },
