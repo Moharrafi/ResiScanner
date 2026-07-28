@@ -15,7 +15,7 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { targetProductName, saveDate, actionType, salesChannel, mappedSizes } = data;
     const isOut = actionType === "out";
-    const dbTypeLabel = isOut ? "out" : "in";
+    const dbTypeLabel = isOut ? "keluar" : "masuk";
     const now = new Date();
     const timePart = now.toTimeString().split(" ")[0] ?? "12:00:00";
     const timestamp = `${saveDate} ${timePart}`;
@@ -23,11 +23,11 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
     let connection;
     try {
       connection = await mysql.createConnection({
-        host: DB_CONFIG.host,
-        port: DB_CONFIG.port,
-        user: DB_CONFIG.user,
-        password: DB_CONFIG.password,
-        database: DB_CONFIG.database,
+        host: process.env.DB_HOST || DB_CONFIG.host,
+        port: Number(process.env.DB_PORT || DB_CONFIG.port),
+        user: process.env.DB_USER || DB_CONFIG.user,
+        password: process.env.DB_PASSWORD || process.env.MYSQL_PASSWORD || DB_CONFIG.password,
+        database: process.env.DB_NAME || DB_CONFIG.database,
         ssl: DB_CONFIG.ssl,
         connectTimeout: 10000,
       });
@@ -82,18 +82,27 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
 
         // Record transaction in inventory table if quantity > 0
         if (qty > 0) {
-          await connection.query(
-            `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`created_at\`)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [targetProductName, sz, qty, dbTypeLabel, salesChannel, timestamp]
-          );
+          try {
+            await connection.query(
+              `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`created_at\`)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [targetProductName, sz, qty, dbTypeLabel, salesChannel, timestamp]
+            );
+          } catch {
+            // Fallback for legacy inventory table schema without sales_channel
+            await connection.query(
+              `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`created_at\`)
+               VALUES (?, ?, ?, ?, ?)`,
+              [targetProductName, sz, qty, dbTypeLabel, timestamp]
+            );
+          }
           recordCount++;
         }
       }
 
       return {
         success: true,
-        message: `Berhasil menyimpan data (${actionType.toUpperCase()}) langsung ke database Aiven MySQL! (${recordCount} varian dicatat)`,
+        message: `Berhasil menyimpan data (${dbTypeLabel.toUpperCase()}) ke database Aiven! (${recordCount} varian terupdate)`,
       };
     } catch (error) {
       console.error("[saveTransactionToDbFn] Database error:", error);
