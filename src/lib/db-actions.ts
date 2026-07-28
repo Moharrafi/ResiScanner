@@ -52,8 +52,10 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
           \`product_name\` VARCHAR(255) NOT NULL,
           \`size\` VARCHAR(50) NOT NULL,
           \`quantity\` INT NOT NULL DEFAULT 0,
-          \`type\` ENUM('in', 'out', 'masuk', 'keluar') DEFAULT '${dbTypeLabel}',
+          \`type\` VARCHAR(50) DEFAULT '${dbTypeLabel}',
           \`sales_channel\` VARCHAR(100) DEFAULT '${salesChannel}',
+          \`total_value\` DECIMAL(12, 2) DEFAULT 0,
+          \`status\` VARCHAR(50) DEFAULT 'COMPLETED',
           \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
@@ -63,6 +65,13 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
         "5": "AEWB-5KG",
         "20": "AEWB-20KG",
         "25": "AEWB-25KG",
+      };
+
+      const PRICE_MAP: Record<string, number> = {
+        "1": 35000,
+        "5": 140000,
+        "20": 720000,
+        "25": 890000,
       };
 
       const sizesToExport = ["1", "5", "20", "25"];
@@ -79,6 +88,8 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
       for (const sz of sizesToExport) {
         const qty = mappedSizes[sz] ?? 0;
         const sku = SKU_MAP[sz] || `AEWB-${sz}KG`;
+        const unitPrice = PRICE_MAP[sz] ?? 0;
+        const totalValue = qty * unitPrice;
 
         // Upsert product stock with SKU support
         try {
@@ -102,17 +113,25 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
         if (qty > 0) {
           try {
             await connection.query(
-              `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`created_at\`)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-              [targetProductName, sz, qty, dbTypeLabel, salesChannel, timestamp]
+              `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`total_value\`, \`status\`, \`created_at\`)
+               VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?)`,
+              [targetProductName, sz, qty, dbTypeLabel, salesChannel, totalValue, timestamp]
             );
           } catch {
-            // Fallback for legacy inventory table schema without sales_channel
-            await connection.query(
-              `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`created_at\`)
-               VALUES (?, ?, ?, ?, ?)`,
-              [targetProductName, sz, qty, dbTypeLabel, timestamp]
-            );
+            try {
+              await connection.query(
+                `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`created_at\`)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [targetProductName, sz, qty, dbTypeLabel, salesChannel, timestamp]
+              );
+            } catch {
+              // Fallback for legacy inventory table schema without sales_channel
+              await connection.query(
+                `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`created_at\`)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [targetProductName, sz, qty, dbTypeLabel, timestamp]
+              );
+            }
           }
           recordCount++;
         }
