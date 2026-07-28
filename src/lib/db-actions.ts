@@ -58,6 +58,13 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
         );
       `);
 
+      const SKU_MAP: Record<string, string> = {
+        "1": "AEWB-1KG",
+        "5": "AEWB-5KG",
+        "20": "AEWB-20KG",
+        "25": "AEWB-25KG",
+      };
+
       const sizesToExport = ["1", "5", "20", "25"];
       for (const sz of Object.keys(mappedSizes)) {
         if (!sizesToExport.includes(sz)) sizesToExport.push(sz);
@@ -71,14 +78,25 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
 
       for (const sz of sizesToExport) {
         const qty = mappedSizes[sz] ?? 0;
+        const sku = SKU_MAP[sz] || `AEWB-${sz}KG`;
 
-        // Upsert product stock
-        await connection.query(
-          `INSERT INTO \`products\` (\`name\`, \`size\`, \`stock\`, \`category\`, \`updated_at\`) 
-           VALUES (?, ?, ?, 'Aspal', ?)
-           ON DUPLICATE KEY UPDATE ${stockUpdateClause}, \`updated_at\` = VALUES(\`updated_at\`)`,
-          [targetProductName, sz, qty, timestamp]
-        );
+        // Upsert product stock with SKU support
+        try {
+          await connection.query(
+            `INSERT INTO \`products\` (\`name\`, \`sku\`, \`size\`, \`stock\`, \`category\`, \`updated_at\`) 
+             VALUES (?, ?, ?, ?, 'Aspal', ?)
+             ON DUPLICATE KEY UPDATE ${stockUpdateClause}, \`updated_at\` = VALUES(\`updated_at\`)`,
+            [targetProductName, sku, sz, qty, timestamp]
+          );
+        } catch {
+          // Fallback if products table does not have sku column
+          await connection.query(
+            `INSERT INTO \`products\` (\`name\`, \`size\`, \`stock\`, \`category\`, \`updated_at\`) 
+             VALUES (?, ?, ?, 'Aspal', ?)
+             ON DUPLICATE KEY UPDATE ${stockUpdateClause}, \`updated_at\` = VALUES(\`updated_at\`)`,
+            [targetProductName, sz, qty, timestamp]
+          );
+        }
 
         // Record transaction in inventory table if quantity > 0
         if (qty > 0) {
