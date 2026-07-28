@@ -21,6 +21,7 @@ async function getOrCreateProductId(
   knownColumns: string[],
 ): Promise<number | null> {
   // 1. Build a safe WHERE clause using only columns that actually exist
+  //    Prioritize products whose name matches targetProductName
   const conditions: string[] = [];
   const params: any[] = [];
 
@@ -43,26 +44,45 @@ async function getOrCreateProductId(
 
   if (conditions.length > 0) {
     const whereClause = conditions.join(" OR ");
+
+    // First try: find product matching size AND whose name contains targetProductName
+    if (knownColumns.includes("name")) {
+      const [exactRows]: any = await connection.query(
+        `SELECT \`id\`, \`name\` FROM \`inventory_products\`
+         WHERE (${whereClause}) AND \`name\` LIKE ?
+         ORDER BY \`id\` DESC LIMIT 1`,
+        [...params, `%${targetProductName}%`]
+      );
+      if (Array.isArray(exactRows) && exactRows.length > 0) {
+        console.log(`[getOrCreateProductId] Found product ID ${exactRows[0].id} ("${exactRows[0].name}") for size "${sz}" matching name "${targetProductName}"`);
+        return exactRows[0].id;
+      }
+    }
+
+    // Second try: any product matching size (no name filter), prefer newest (DESC)
     const [rows]: any = await connection.query(
-      `SELECT \`id\` FROM \`inventory_products\` WHERE ${whereClause} LIMIT 1`,
+      `SELECT \`id\`, \`name\` FROM \`inventory_products\` WHERE ${whereClause} ORDER BY \`id\` DESC LIMIT 1`,
       params
     );
     if (Array.isArray(rows) && rows.length > 0) {
-      console.log(`[getOrCreateProductId] Found product ID ${rows[0].id} for size "${sz}"`);
+      console.log(`[getOrCreateProductId] Found product ID ${rows[0].id} ("${rows[0].name}") for size "${sz}" (no name filter)`);
       return rows[0].id;
     }
   }
 
-  // 2. Fallback: map standard sizes (1,5,20,25) to row position in table
-  const [allProducts]: any = await connection.query(
-    `SELECT \`id\` FROM \`inventory_products\` ORDER BY \`id\` ASC`
+  // 2. Fallback: map standard sizes (1,5,20,25) to last 4 products (newest) that match targetProductName
+  const nameFilter = knownColumns.includes("name") ? " WHERE `name` LIKE ?" : "";
+  const nameParam = knownColumns.includes("name") ? [`%${targetProductName}%`] : [];
+  const [matchedProducts]: any = await connection.query(
+    `SELECT \`id\` FROM \`inventory_products\`${nameFilter} ORDER BY \`id\` ASC`,
+    nameParam
   );
-  if (Array.isArray(allProducts) && allProducts.length > 0) {
+  if (Array.isArray(matchedProducts) && matchedProducts.length > 0) {
     const idxMap: Record<string, number> = { "1": 0, "5": 1, "20": 2, "25": 3 };
     const idx = idxMap[sz];
-    if (idx !== undefined && allProducts[idx]) {
-      console.log(`[getOrCreateProductId] Fallback: mapped size "${sz}" to product ID ${allProducts[idx].id} (row index ${idx})`);
-      return allProducts[idx].id;
+    if (idx !== undefined && matchedProducts[idx]) {
+      console.log(`[getOrCreateProductId] Fallback: mapped size "${sz}" to product ID ${matchedProducts[idx].id} (row index ${idx} of name-filtered set)`);
+      return matchedProducts[idx].id;
     }
   }
 
