@@ -10,15 +10,27 @@ export type SaveDbPayload = {
   mappedSizes: Record<string, number>;
 };
 
+/**
+ * Product ID mapping for "Aspal Emulsion Waterproofing Baru" in `inventory_products` table.
+ * These IDs match the existing rows in the inventoryaspal dashboard database.
+ *
+ *   id=7  -> AEWB-1KG  (variant '1',  price 35000)
+ *   id=8  -> AEWB-5KG  (variant '5',  price 140000)
+ *   id=9  -> AEWB-20KG (variant '20', price 720000)
+ *   id=10 -> AEWB-25KG (variant '25', price 890000)
+ */
+const PRODUCT_ID_MAP: Record<string, number> = {
+  "1": 7,
+  "5": 8,
+  "20": 9,
+  "25": 10,
+};
+
 export const saveTransactionToDbFn = createServerFn({ method: "POST" })
   .validator((data: SaveDbPayload) => data)
   .handler(async ({ data }) => {
-    const { targetProductName, saveDate, actionType, salesChannel, mappedSizes } = data;
+    const { saveDate, actionType, salesChannel, mappedSizes } = data;
     const isOut = actionType === "out";
-    const dbTypeLabel = isOut ? "keluar" : "masuk";
-    const now = new Date();
-    const timePart = now.toTimeString().split(" ")[0] ?? "12:00:00";
-    const timestamp = `${saveDate} ${timePart}`;
 
     let connection;
     try {
@@ -32,129 +44,67 @@ export const saveTransactionToDbFn = createServerFn({ method: "POST" })
         connectTimeout: 10000,
       });
 
-      // 1. Ensure tables exist
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS \`products\` (
-          \`id\` INT AUTO_INCREMENT PRIMARY KEY,
-          \`name\` VARCHAR(255) NOT NULL,
-          \`size\` VARCHAR(50) NOT NULL,
-          \`stock\` INT NOT NULL DEFAULT 0,
-          \`category\` VARCHAR(100) DEFAULT 'Aspal',
-          \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
-          \`updated_at\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          UNIQUE KEY \`name_size_unique\` (\`name\`, \`size\`)
-        );
-      `);
-
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS \`inventory\` (
-          \`id\` INT AUTO_INCREMENT PRIMARY KEY,
-          \`product_name\` VARCHAR(255) NOT NULL,
-          \`size\` VARCHAR(50) NOT NULL,
-          \`quantity\` INT NOT NULL DEFAULT 0,
-          \`type\` VARCHAR(50) DEFAULT '${dbTypeLabel}',
-          \`sales_channel\` VARCHAR(100) DEFAULT '${salesChannel}',
-          \`total_value\` DECIMAL(12, 2) DEFAULT 0,
-          \`status\` VARCHAR(50) DEFAULT 'COMPLETED',
-          \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-
-      const SKU_MAP: Record<string, string> = {
-        "1": "AEWB-1KG",
-        "5": "AEWB-5KG",
-        "20": "AEWB-20KG",
-        "25": "AEWB-25KG",
-      };
-
-      const PRICE_MAP: Record<string, number> = {
-        "1": 35000,
-        "5": 140000,
-        "20": 720000,
-        "25": 890000,
-      };
-
-      const sizesToExport = ["1", "5", "20", "25"];
-      for (const sz of Object.keys(mappedSizes)) {
-        if (!sizesToExport.includes(sz)) sizesToExport.push(sz);
-      }
-
-      const stockUpdateClause = isOut
-        ? "`stock` = GREATEST(0, `stock` - VALUES(`stock`))"
-        : "`stock` = `stock` + VALUES(`stock`)";
+      await connection.beginTransaction();
 
       let recordCount = 0;
 
-      for (const sz of sizesToExport) {
-        const qty = mappedSizes[sz] ?? 0;
-        const sku = SKU_MAP[sz] || `AEWB-${sz}KG`;
-        const unitPrice = PRICE_MAP[sz] ?? 0;
-        const totalValue = qty * unitPrice;
+      for (const [sz, qty] of Object.entries(mappedSizes)) {
+        if (qty <= 0) continue;
 
-        // Upsert product stock with SKU support
-        try {
+        const productId = PRODUCT_ID_MAP[sz];
+        if (!productId) continue; // skip unknown sizes
+
+        if (isOut) {
+          // INSERT into stock_out table (used by dashboard for OUT transactions)
           await connection.query(
-            `INSERT INTO \`products\` (\`name\`, \`sku\`, \`size\`, \`stock\`, \`category\`, \`updated_at\`) 
-             VALUES (?, ?, ?, ?, 'Aspal', ?)
-             ON DUPLICATE KEY UPDATE ${stockUpdateClause}, \`updated_at\` = VALUES(\`updated_at\`)`,
-            [targetProductName, sku, sz, qty, timestamp]
+            `INSERT INTO \`stock_out\` (\`product_id\`, \`quantity\`, \`date\`, \`notes\`, \`customer\`)
+             VALUES (?, ?, ?, ?, ?)`,
+            [productId, qty, saveDate, `Stok keluar dari PDF resi`, salesChannel]
           );
-        } catch {
-          // Fallback if products table does not have sku column
+
+          // Update inventory_products stock (decrease)
           await connection.query(
-            `INSERT INTO \`products\` (\`name\`, \`size\`, \`stock\`, \`category\`, \`updated_at\`) 
-             VALUES (?, ?, ?, 'Aspal', ?)
-             ON DUPLICATE KEY UPDATE ${stockUpdateClause}, \`updated_at\` = VALUES(\`updated_at\`)`,
-            [targetProductName, sz, qty, timestamp]
+            `UPDATE \`inventory_products\` SET \`stock\` = \`stock\` - ? WHERE \`id\` = ?`,
+            [qty, productId]
+          );
+        } else {
+          // INSERT into stock_in table (used by dashboard for IN transactions)
+          await connection.query(
+            `INSERT INTO \`stock_in\` (\`product_id\`, \`quantity\`, \`date\`, \`notes\`, \`supplier\`)
+             VALUES (?, ?, ?, ?, ?)`,
+            [productId, qty, saveDate, `Stok masuk dari PDF resi`, salesChannel]
+          );
+
+          // Update inventory_products stock (increase)
+          await connection.query(
+            `UPDATE \`inventory_products\` SET \`stock\` = \`stock\` + ? WHERE \`id\` = ?`,
+            [qty, productId]
           );
         }
 
-        // Record transaction in inventory table if quantity > 0
-        if (qty > 0) {
-          try {
-            await connection.query(
-              `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`total_value\`, \`status\`, \`created_at\`)
-               VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?)`,
-              [targetProductName, sz, qty, dbTypeLabel, salesChannel, totalValue, timestamp]
-            );
-          } catch {
-            try {
-              await connection.query(
-                `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`sales_channel\`, \`created_at\`)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [targetProductName, sz, qty, dbTypeLabel, salesChannel, timestamp]
-              );
-            } catch {
-              // Fallback for legacy inventory table schema without sales_channel
-              await connection.query(
-                `INSERT INTO \`inventory\` (\`product_name\`, \`size\`, \`quantity\`, \`type\`, \`created_at\`)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [targetProductName, sz, qty, dbTypeLabel, timestamp]
-              );
-            }
-          }
-          recordCount++;
-        }
+        recordCount++;
       }
 
+      await connection.commit();
+
+      const label = isOut ? "KELUAR" : "MASUK";
       return {
         success: true,
-        message: `Berhasil menyimpan data (${dbTypeLabel.toUpperCase()}) ke database Aiven! (${recordCount} varian terupdate)`,
+        message: `Berhasil menyimpan ${recordCount} transaksi (${label}) ke database inventory! Cek dashboard admin.`,
       };
     } catch (error) {
+      if (connection) {
+        try { await connection.rollback(); } catch { /* ignore */ }
+      }
       console.error("[saveTransactionToDbFn] Database error:", error);
       const errMsg = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        message: `Gagal menyimpan ke database Aiven MySQL: ${errMsg}`,
+        message: `Gagal menyimpan ke database: ${errMsg}`,
       };
     } finally {
       if (connection) {
-        try {
-          await connection.end();
-        } catch {
-          // Ignore connection close errors
-        }
+        try { await connection.end(); } catch { /* ignore */ }
       }
     }
   });
