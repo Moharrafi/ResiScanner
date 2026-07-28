@@ -129,6 +129,33 @@ function Index() {
     }
   }, []);
 
+  // Listen for PDF files passed from Android Intent (WhatsApp, File Manager, Email, etc.)
+  useEffect(() => {
+    (window as any).handleAndroidPdfFile = (fileName: string, base64Data: string) => {
+      try {
+        const binaryString = atob(base64Data);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const file = new File([blob], fileName || "Dokumen_Resi.pdf", { type: "application/pdf" });
+
+        toast.info(`Membuka PDF dari Android: ${file.name}`);
+        processFiles([file]);
+      } catch (err) {
+        console.error("Gagal membaca Intent PDF dari Android:", err);
+        toast.error("Gagal memproses file PDF dari aplikasi lain.");
+      }
+    };
+
+    // Notify Android native side to flush any pending files queued before Web JS was ready
+    if ((window as any).AndroidIntentBridge?.flushPendingFiles) {
+      (window as any).AndroidIntentBridge.flushPendingFiles();
+    }
+  }, [processFiles]);
+
   const removeFile = (idx: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== idx));
   };
