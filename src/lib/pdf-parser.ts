@@ -7,6 +7,7 @@ export type ProductRow = {
   name: string; // base name without size token
   size: string | null; // normalized size, e.g. "5KG"
   qty: number;
+  pageWeightSize?: string | null; // fallback weight extracted from shipping label (e.g. "1KG")
 };
 
 export type GroupedProduct = {
@@ -79,9 +80,62 @@ function extractSizeFromName(name: string): { size: string | null; cleaned: stri
   return { size, cleaned };
 }
 
+// Extracts total package weight in kg from page text (e.g., "Berat: 3000 gr" -> 3.0)
+export function extractPageWeightInKg(textLines: string[]): number | null {
+  const fullText = textLines.join(" ");
+
+  // Matches:
+  // - "Berat: 1000 gr", "Berat: 3000g", "Berat: 5 kg", "Weight: 5000 g"
+  // - "Berat (gr): 3000", "Berat (kg): 5"
+  // - "Berat: 3000"
+  const weightRegex =
+    /(?:Berat|Weight)\s*(?:\((kgs?|kilogram|gr(?:am)?s?|g)\))?\s*:?\s*(\d+(?:[.,]\d+)?)\s*(kgs?|kilogram|gr(?:am)?s?|g)?\b/i;
+
+  const match = fullText.match(weightRegex);
+  if (!match) return null;
+
+  const parenUnit = match[1];
+  const numRaw = match[2];
+  const trailingUnit = match[3];
+
+  if (!numRaw) return null;
+
+  const num = parseFloat(numRaw.replace(",", "."));
+  if (isNaN(num) || num <= 0) return null;
+
+  const unit = (trailingUnit || parenUnit || "").toLowerCase();
+
+  if (unit.startsWith("gr") || unit === "g" || unit.startsWith("gram")) {
+    return num / 1000;
+  } else if (unit.startsWith("kg") || unit.startsWith("kilogram")) {
+    return num;
+  } else {
+    // Fallback: if number >= 100 assume grams (e.g. 3000 -> 3kg), else assume kg (e.g. 1, 5, 20)
+    return num >= 100 ? num / 1000 : num;
+  }
+}
+
+// Calculates single unit weight (Total Weight / Qty) and snaps to standard inventory sizes (1, 5, 20, 25 kg)
+export function computeUnitWeightSize(totalWeightInKg: number | null, qty: number): string | null {
+  if (totalWeightInKg == null || totalWeightInKg <= 0 || qty <= 0) return null;
+
+  const unitWeight = totalWeightInKg / qty;
+
+  // Snap to standard inventory sizes (1, 5, 20, 25 kg) with packaging tolerance buffers
+  if (unitWeight >= 0.7 && unitWeight <= 1.4) return "1KG";
+  if (unitWeight >= 3.5 && unitWeight <= 7.5) return "5KG";
+  if (unitWeight >= 15.0 && unitWeight <= 22.0) return "20KG";
+  if (unitWeight >= 22.1 && unitWeight <= 30.0) return "25KG";
+
+  const cleanKgNum = Number(unitWeight.toFixed(3)).toString();
+  return `${cleanKgNum}KG`;
+}
+
 type LineItem = { y: number; x: number; str: string; width: number };
 
-export async function extractRowsFromPdf(file: File): Promise<{ name: string; qty: number }[]> {
+export async function extractRowsFromPdf(
+  file: File,
+): Promise<{ name: string; qty: number; pageWeightSize?: string | null }[]> {
   const pdfjs: any = await import("pdfjs-dist/build/pdf.mjs");
   const workerSrc = (await import("pdfjs-dist/build/pdf.worker.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -89,7 +143,7 @@ export async function extractRowsFromPdf(file: File): Promise<{ name: string; qt
   const buf = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
 
-  const allRows: { name: string; qty: number }[] = [];
+  const allRows: { name: string; qty: number; pageWeightSize?: string | null }[] = [];
 
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
@@ -114,6 +168,12 @@ export async function extractRowsFromPdf(file: File): Promise<{ name: string; qt
       else rows.push([it]);
     }
 
+    // Extract text lines for this page to find "Berat: XXX gr/kg"
+    const textLines = rows.map((r) =>
+      [...r].sort((a, b) => a.x - b.x).map((it) => it.str).join(" "),
+    );
+    const pageWeightInKg = extractPageWeightInKg(textLines);
+
     // Detect the product table header on this page. We REQUIRE both a
     // "Product Name"-style column AND a "Qty"-style column; otherwise the
     // page is treated as non-tabular (e.g. shipping label) and skipped.
@@ -137,11 +197,16 @@ export async function extractRowsFromPdf(file: File): Promise<{ name: string; qt
     // Only consider rows below the header
     const bodyRows = rows.filter((r) => r[0].y < headerY!);
 
-    let current: { name: string; qty: number } | null = null;
+    let current: { name: string; qty: number; pageWeightInKg?: number | null } | null = null;
 
     const flush = () => {
       if (current && current.name.trim()) {
-        allRows.push({ name: current.name.replace(/\s+/g, " ").trim(), qty: current.qty });
+        const unitWeightSize = computeUnitWeightSize(current.pageWeightInKg ?? null, current.qty);
+        allRows.push({
+          name: current.name.replace(/\s+/g, " ").trim(),
+          qty: current.qty,
+          pageWeightSize: unitWeightSize,
+        });
       }
       current = null;
     };
@@ -161,13 +226,13 @@ export async function extractRowsFromPdf(file: File): Promise<{ name: string; qt
         current = {
           name: nameText.replace(/\bDefault\b/g, " "),
           qty: parseInt(qtyCell.str.trim(), 10),
+          pageWeightInKg,
         };
       } else if (current && nameText) {
         // continuation of the previous product's multi-line name
         current.name += " " + nameText.replace(/\bDefault\b/g, " ");
       } else if (!nameText && !qtyCell) {
         // an entirely empty tabular row between products — end current entry
-        // (but only if we actually left the table area)
       }
     }
     flush();
@@ -177,11 +242,12 @@ export async function extractRowsFromPdf(file: File): Promise<{ name: string; qt
 }
 
 export function parseProducts(
-  raw: { name: string; qty: number }[],
+  raw: { name: string; qty: number; pageWeightSize?: string | null }[],
 ): { rows: ProductRow[]; grouped: GroupedProduct[] } {
   const rows: ProductRow[] = raw.map((r) => {
     const { size, cleaned } = extractSizeFromName(r.name);
-    return { raw: r.name, name: cleaned, size, qty: r.qty };
+    const finalSize = size ?? r.pageWeightSize ?? null;
+    return { raw: r.name, name: cleaned, size: finalSize, qty: r.qty, pageWeightSize: r.pageWeightSize };
   });
 
   // Group by (baseName + size), summing qty across pages
@@ -212,3 +278,4 @@ export function parseProducts(
   const grouped = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
   return { rows, grouped };
 }
+

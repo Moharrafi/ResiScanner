@@ -167,7 +167,9 @@ function Index() {
 
   // Merge all rows across uploaded files, then regroup
   const { rows, grouped } = useMemo(() => {
-    const allRaw = files.flatMap((f) => f.rows.map((r) => ({ name: r.raw, qty: r.qty })));
+    const allRaw = files.flatMap((f) =>
+      f.rows.map((r) => ({ name: r.raw, qty: r.qty, pageWeightSize: r.pageWeightSize })),
+    );
     return parseProducts(allRaw);
   }, [files]);
 
@@ -624,6 +626,7 @@ ${inventoryValues.join(",\n")};`
                               <TableCell className="py-2.5">
                                 <Badge variant={r.size ? "default" : "outline"} className="text-[10px] px-2 py-0.5 font-bold">
                                   {r.size ?? "-"}
+                                  {r.pageWeightSize && r.size === r.pageWeightSize ? " (Resi)" : ""}
                                 </Badge>
                               </TableCell>
                               <TableCell className="text-right font-bold tabular-nums py-2.5">{r.qty}</TableCell>
