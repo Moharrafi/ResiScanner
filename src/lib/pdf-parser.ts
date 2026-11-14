@@ -2,9 +2,13 @@
 // Detects sizes embedded in product names (e.g. 5kg, 500g, 1L, 250ml, 20cm)
 // and groups identical (name+size) items across pages, summing qty.
 
+export type ProductCategory = "hitam" | "hijau" | "bitumax" | "lainnya";
+
 export type ProductRow = {
   raw: string;
   name: string; // base name without size token
+  sku?: string | null;
+  category: ProductCategory;
   size: string | null; // normalized size, e.g. "5KG"
   qty: number;
   pageWeightSize?: string | null; // fallback weight extracted from shipping label (e.g. "1KG")
@@ -12,9 +16,74 @@ export type ProductRow = {
 
 export type GroupedProduct = {
   name: string;
+  category?: ProductCategory;
+  sku?: string | null;
   variants: { size: string; qty: number }[];
   totalQty: number;
 };
+
+export type QtyTier = {
+  qtyPerOrder: number; // e.g. 1, 2, 3...
+  orderCount: number; // how many orders/packages have this qty
+  totalQty: number; // qtyPerOrder * orderCount
+  items: {
+    raw: string;
+    name: string;
+    sku?: string | null;
+    qty: number;
+  }[];
+};
+
+export type CategorySizeGroup = {
+  size: string; // e.g. "5KG"
+  totalQty: number;
+  totalOrders: number;
+  qtyTiers: QtyTier[];
+  items: {
+    raw: string;
+    name: string;
+    sku?: string | null;
+    qty: number;
+  }[];
+};
+
+export type CategoryGroup = {
+  category: ProductCategory;
+  label: string; // "Hitam (Biasa)", "Hijau", "Bitumax", "Lainnya"
+  skuPrefix: string; // "aspalcair*", "HIJAU*", "Bitumax*"
+  totalQty: number;
+  totalOrders: number;
+  sizes: CategorySizeGroup[];
+};
+
+export function detectCategory(text: string, sku?: string | null): ProductCategory {
+  const combined = `${text} ${sku ?? ""}`.toLowerCase();
+
+  // 1. Bitumax (case-insensitive)
+  if (combined.includes("bitumax")) {
+    return "bitumax";
+  }
+
+  // 2. Hijau (case-insensitive)
+  if (combined.includes("hijau") || combined.includes("green")) {
+    return "hijau";
+  }
+
+  // 3. Hitam (biasa / reguler)
+  // User explicitly noted: "ada yang biasa itu disebut hitam, lalu ada hijau lalu ada bitumax"
+  if (
+    combined.includes("hitam") ||
+    combined.includes("black") ||
+    combined.includes("aspalcair") ||
+    combined.includes("aspal cair") ||
+    combined.includes("aspal")
+  ) {
+    return "hitam";
+  }
+
+  // Default to regular hitam
+  return "hitam";
+}
 
 // Size units we care about (weight / volume / length / pack).
 // Matches things like: 5kg, 5 kg, 1.5L, 500ml, 250 gr, 20cm, 12", 6pcs
@@ -135,7 +204,7 @@ type LineItem = { y: number; x: number; str: string; width: number };
 
 export async function extractRowsFromPdf(
   file: File,
-): Promise<{ name: string; qty: number; pageWeightSize?: string | null }[]> {
+): Promise<{ name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[]> {
   const pdfjs: any = await import("pdfjs-dist/build/pdf.mjs");
   const workerSrc = (await import("pdfjs-dist/build/pdf.worker.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -143,7 +212,7 @@ export async function extractRowsFromPdf(
   const buf = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
 
-  const allRows: { name: string; qty: number; pageWeightSize?: string | null }[] = [];
+  const allRows: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[] = [];
 
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
@@ -179,15 +248,20 @@ export async function extractRowsFromPdf(
     // page is treated as non-tabular (e.g. shipping label) and skipped.
     let qtyX: number | null = null;
     let nameX: number | null = null;
+    let skuX: number | null = null;
     let headerY: number | null = null;
     for (const row of rows) {
       const hasQty = row.find((r) => /^(qty|quantity|jumlah|jml)$/i.test(r.str.trim()));
       const hasName = row.find((r) =>
         /^(product\s*name|nama\s*produk|item|product)$/i.test(r.str.trim()),
       );
+      const hasSku = row.find((r) =>
+        /^(seller\s*sku|sku|no\.?\s*sku|kode\s*sku)$/i.test(r.str.trim()),
+      );
       if (hasQty && hasName) {
         qtyX = hasQty.x;
         nameX = hasName.x;
+        if (hasSku) skuX = hasSku.x;
         headerY = row[0].y;
         break;
       }
@@ -197,13 +271,19 @@ export async function extractRowsFromPdf(
     // Only consider rows below the header
     const bodyRows = rows.filter((r) => r[0].y < headerY!);
 
-    let current: { name: string; qty: number; pageWeightInKg?: number | null } | null = null;
+    let current: { name: string; sku?: string | null; qty: number; pageWeightInKg?: number | null } | null = null;
 
     const flush = () => {
       if (current && current.name.trim()) {
         const unitWeightSize = computeUnitWeightSize(current.pageWeightInKg ?? null, current.qty);
+        let finalSku = current.sku ? current.sku.trim() : null;
+        if (!finalSku) {
+          const m = current.name.match(/\b(aspalcair\w*|hijau\w*|bitumax\w*)\b/i);
+          if (m) finalSku = m[1];
+        }
         allRows.push({
           name: current.name.replace(/\s+/g, " ").trim(),
+          sku: finalSku,
           qty: current.qty,
           pageWeightSize: unitWeightSize,
         });
@@ -217,21 +297,50 @@ export async function extractRowsFromPdf(
       const qtyCell = sorted.find(
         (r) => Math.abs(r.x - qtyX!) < 60 && /^\d{1,4}$/.test(r.str.trim()),
       );
-      // does this row have text in the name column?
-      const nameHere = sorted.filter((r) => r.x >= nameX! - 20 && r.x < qtyX! - 120);
+
+      // SKU cell if skuX is detected
+      let skuCellText: string | null = null;
+      if (skuX != null) {
+        const skuCells = sorted.filter(
+          (r) => Math.abs(r.x - skuX!) < 70 && r !== qtyCell && !/^(product|item|qty|nama)/i.test(r.str.trim()),
+        );
+        if (skuCells.length > 0) {
+          skuCellText = skuCells.map((r) => r.str).join(" ").trim();
+        }
+      }
+
+      // Max coordinate for product name: don't cross into SKU or QTY column
+      const maxNameX =
+        skuX != null && skuX > nameX! + 30
+          ? skuX - 15
+          : qtyCell
+            ? qtyCell.x - 15
+            : qtyX! - 25;
+
+      const nameHere = sorted.filter(
+        (r) => r.x >= nameX! - 20 && r.x <= maxNameX && r !== qtyCell,
+      );
       const nameText = nameHere.map((r) => r.str).join(" ").trim();
 
-      if (qtyCell && nameText) {
+      // If SKU was not separated by column, check inside nameText
+      if (!skuCellText && nameText) {
+        const m = nameText.match(/\b(aspalcair\w*|hijau\w*|bitumax\w*)\b/i);
+        if (m) skuCellText = m[1];
+      }
+
+      if (qtyCell && (nameText || skuCellText)) {
         flush();
         current = {
-          name: nameText.replace(/\bDefault\b/g, " "),
+          name: (nameText || skuCellText || "").replace(/\bDefault\b/g, " "),
+          sku: skuCellText,
           qty: parseInt(qtyCell.str.trim(), 10),
           pageWeightInKg,
         };
-      } else if (current && nameText) {
+      } else if (current && (nameText || skuCellText)) {
         // continuation of the previous product's multi-line name
-        current.name += " " + nameText.replace(/\bDefault\b/g, " ");
-      } else if (!nameText && !qtyCell) {
+        if (nameText) current.name += " " + nameText.replace(/\bDefault\b/g, " ");
+        if (skuCellText && !current.sku) current.sku = skuCellText;
+      } else if (!nameText && !qtyCell && !skuCellText) {
         // an entirely empty tabular row between products — end current entry
       }
     }
@@ -242,28 +351,54 @@ export async function extractRowsFromPdf(
 }
 
 export function parseProducts(
-  raw: { name: string; qty: number; pageWeightSize?: string | null }[],
-): { rows: ProductRow[]; grouped: GroupedProduct[] } {
+  raw: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[],
+): {
+  rows: ProductRow[];
+  grouped: GroupedProduct[];
+  categories: CategoryGroup[];
+} {
   const rows: ProductRow[] = raw.map((r) => {
-    const { size, cleaned } = extractSizeFromName(r.name);
+    let { size, cleaned } = extractSizeFromName(r.name);
+    // If size not in product name, try from SKU
+    if (!size && r.sku) {
+      const fromSku = extractSizeFromName(r.sku);
+      if (fromSku.size) size = fromSku.size;
+    }
     const finalSize = size ?? r.pageWeightSize ?? null;
-    return { raw: r.name, name: cleaned, size: finalSize, qty: r.qty, pageWeightSize: r.pageWeightSize };
+
+    let finalSku = r.sku ?? null;
+    if (!finalSku) {
+      const m = r.name.match(/\b(aspalcair\w*|hijau\w*|bitumax\w*)\b/i);
+      if (m) finalSku = m[1];
+    }
+
+    const category = detectCategory(r.name, finalSku);
+
+    return {
+      raw: r.name,
+      name: cleaned,
+      sku: finalSku,
+      category,
+      size: finalSize,
+      qty: r.qty,
+      pageWeightSize: r.pageWeightSize,
+    };
   });
 
-  // Group by (baseName + size), summing qty across pages
-  const bySizeKey = new Map<string, { name: string; size: string | null; qty: number }>();
+  // 1. Group by (baseName + size), summing qty across pages (backward compatibility)
+  const bySizeKey = new Map<string, { name: string; category: ProductCategory; sku?: string | null; size: string | null; qty: number }>();
   for (const r of rows) {
     const key = `${r.name.toLowerCase()}|${r.size ?? "-"}`;
     const existing = bySizeKey.get(key);
     if (existing) existing.qty += r.qty;
-    else bySizeKey.set(key, { name: r.name, size: r.size, qty: r.qty });
+    else bySizeKey.set(key, { name: r.name, category: r.category, sku: r.sku, size: r.size, qty: r.qty });
   }
 
   // Then group by base name, listing variants per size
   const byName = new Map<string, GroupedProduct>();
   for (const v of bySizeKey.values()) {
     const key = v.name.toLowerCase();
-    if (!byName.has(key)) byName.set(key, { name: v.name, variants: [], totalQty: 0 });
+    if (!byName.has(key)) byName.set(key, { name: v.name, category: v.category, sku: v.sku, variants: [], totalQty: 0 });
     const g = byName.get(key)!;
     g.variants.push({ size: v.size ?? "-", qty: v.qty });
     g.totalQty += v.qty;
@@ -276,6 +411,147 @@ export function parseProducts(
   }
 
   const grouped = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
-  return { rows, grouped };
+
+  // 2. Build 3 standard categories: Hitam (Biasa), Hijau, Bitumax
+  const standardCategories: { category: ProductCategory; label: string; skuPrefix: string }[] = [
+    {
+      category: "hitam",
+      label: "Hitam (Biasa)",
+      skuPrefix: "aspalcair*",
+    },
+    {
+      category: "hijau",
+      label: "Hijau",
+      skuPrefix: "HIJAU*",
+    },
+    {
+      category: "bitumax",
+      label: "Bitumax",
+      skuPrefix: "Bitumax*",
+    },
+  ];
+
+  const categories: CategoryGroup[] = standardCategories.map((meta) => {
+    const catRows = rows.filter((r) => r.category === meta.category);
+
+    // Group catRows by size
+    const sizeMap = new Map<string, ProductRow[]>();
+    for (const r of catRows) {
+      const szKey = r.size ?? "Tanpa Ukuran";
+      if (!sizeMap.has(szKey)) sizeMap.set(szKey, []);
+      sizeMap.get(szKey)!.push(r);
+    }
+
+    const sizes: CategorySizeGroup[] = [];
+    for (const [szKey, sRows] of sizeMap.entries()) {
+      const totalSizeQty = sRows.reduce((acc, r) => acc + r.qty, 0);
+      const totalSizeOrders = sRows.length;
+
+      // Group by qtyPerOrder (e.g. qty 1 vs qty 2 vs qty 3...)
+      const tierMap = new Map<number, QtyTier>();
+      for (const r of sRows) {
+        if (!tierMap.has(r.qty)) {
+          tierMap.set(r.qty, {
+            qtyPerOrder: r.qty,
+            orderCount: 0,
+            totalQty: 0,
+            items: [],
+          });
+        }
+        const tier = tierMap.get(r.qty)!;
+        tier.orderCount += 1;
+        tier.totalQty += r.qty;
+        tier.items.push({
+          raw: r.raw,
+          name: r.name,
+          sku: r.sku,
+          qty: r.qty,
+        });
+      }
+
+      const qtyTiers = [...tierMap.values()].sort((a, b) => a.qtyPerOrder - b.qtyPerOrder);
+
+      sizes.push({
+        size: szKey,
+        totalQty: totalSizeQty,
+        totalOrders: totalSizeOrders,
+        qtyTiers,
+        items: sRows.map((r) => ({
+          raw: r.raw,
+          name: r.name,
+          sku: r.sku,
+          qty: r.qty,
+        })),
+      });
+    }
+
+    // Sort sizes naturally (1KG, 5KG, 20KG, 25KG, etc.)
+    sizes.sort((a, b) =>
+      a.size.localeCompare(b.size, undefined, { numeric: true, sensitivity: "base" }),
+    );
+
+    const totalCatQty = sizes.reduce((acc, s) => acc + s.totalQty, 0);
+    const totalCatOrders = sizes.reduce((acc, s) => acc + s.totalOrders, 0);
+
+    return {
+      category: meta.category,
+      label: meta.label,
+      skuPrefix: meta.skuPrefix,
+      totalQty: totalCatQty,
+      totalOrders: totalCatOrders,
+      sizes,
+    };
+  });
+
+  // Check if there are any unclassified rows (lainnya)
+  const otherRows = rows.filter((r) => r.category === "lainnya");
+  if (otherRows.length > 0) {
+    const sizeMap = new Map<string, ProductRow[]>();
+    for (const r of otherRows) {
+      const szKey = r.size ?? "Tanpa Ukuran";
+      if (!sizeMap.has(szKey)) sizeMap.set(szKey, []);
+      sizeMap.get(szKey)!.push(r);
+    }
+    const sizes: CategorySizeGroup[] = [];
+    for (const [szKey, sRows] of sizeMap.entries()) {
+      const totalSizeQty = sRows.reduce((acc, r) => acc + r.qty, 0);
+      const tierMap = new Map<number, QtyTier>();
+      for (const r of sRows) {
+        if (!tierMap.has(r.qty)) {
+          tierMap.set(r.qty, {
+            qtyPerOrder: r.qty,
+            orderCount: 0,
+            totalQty: 0,
+            items: [],
+          });
+        }
+        const tier = tierMap.get(r.qty)!;
+        tier.orderCount += 1;
+        tier.totalQty += r.qty;
+        tier.items.push({ raw: r.raw, name: r.name, sku: r.sku, qty: r.qty });
+      }
+      sizes.push({
+        size: szKey,
+        totalQty: totalSizeQty,
+        totalOrders: sRows.length,
+        qtyTiers: [...tierMap.values()].sort((a, b) => a.qtyPerOrder - b.qtyPerOrder),
+        items: sRows.map((r) => ({ raw: r.raw, name: r.name, sku: r.sku, qty: r.qty })),
+      });
+    }
+    sizes.sort((a, b) =>
+      a.size.localeCompare(b.size, undefined, { numeric: true, sensitivity: "base" }),
+    );
+    categories.push({
+      category: "lainnya",
+      label: "Lainnya",
+      skuPrefix: "-",
+      totalQty: sizes.reduce((acc, s) => acc + s.totalQty, 0),
+      totalOrders: sizes.reduce((acc, s) => acc + s.totalOrders, 0),
+      sizes,
+    });
+  }
+
+  return { rows, grouped, categories };
 }
+
 

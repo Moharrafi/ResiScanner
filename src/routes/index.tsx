@@ -46,6 +46,8 @@ import {
   parseProducts,
   type GroupedProduct,
   type ProductRow,
+  type CategoryGroup,
+  type CategorySizeGroup,
 } from "@/lib/pdf-parser";
 import { DB_CONFIG } from "@/lib/db";
 import { saveTransactionToDbFn } from "@/lib/db-actions";
@@ -82,6 +84,14 @@ function Index() {
   const [showAllFiles, setShowAllFiles] = useState(false);
   // Open size card accordions; empty means all are MINIMIZED by default on initial load
   const [openSizes, setOpenSizes] = useState<Record<string, boolean>>({});
+  // Open category accordions in "Per Produk" tab (Hitam, Hijau, Bitumax)
+  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({
+    hitam: true,
+    hijau: true,
+    bitumax: true,
+  });
+  // Category selected in DB Save modal (all, hitam, hijau, bitumax)
+  const [selectedDbCategory, setSelectedDbCategory] = useState<string>("all");
   // Save DB Modal state
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [isSavingDb, setIsSavingDb] = useState(false);
@@ -163,12 +173,18 @@ function Index() {
   const resetAll = () => {
     setFiles([]);
     setOpenSizes({});
+    setOpenCategories({ hitam: true, hijau: true, bitumax: true });
   };
 
   // Merge all rows across uploaded files, then regroup
-  const { rows, grouped } = useMemo(() => {
+  const { rows, grouped, categories } = useMemo(() => {
     const allRaw = files.flatMap((f) =>
-      f.rows.map((r) => ({ name: r.raw, qty: r.qty, pageWeightSize: r.pageWeightSize })),
+      f.rows.map((r) => ({
+        name: r.raw,
+        sku: r.sku,
+        qty: r.qty,
+        pageWeightSize: r.pageWeightSize,
+      })),
     );
     return parseProducts(allRaw);
   }, [files]);
@@ -195,7 +211,17 @@ function Index() {
   const mappedStandardSizes = useMemo(() => {
     const qtyMap: Record<string, number> = { "1": 0, "5": 0, "20": 0, "25": 0 };
     
-    for (const s of bySize) {
+    let sourceSizes: { size: string; totalQty: number }[] = [];
+    if (selectedDbCategory === "all") {
+      sourceSizes = bySize;
+    } else {
+      const cat = categories.find((c) => c.category === selectedDbCategory);
+      if (cat) {
+        sourceSizes = cat.sizes.map((s) => ({ size: s.size, totalQty: s.totalQty }));
+      }
+    }
+
+    for (const s of sourceSizes) {
       // Extract numeric size
       const sizeStr = s.size.replace(/[^\d.]/g, "");
       if (sizeStr === "1") qtyMap["1"] += s.totalQty;
@@ -207,7 +233,7 @@ function Index() {
       }
     }
     return qtyMap;
-  }, [bySize]);
+  }, [bySize, categories, selectedDbCategory]);
 
   const toggleSize = (sizeKey: string) => {
     setOpenSizes((prev) => ({ ...prev, [sizeKey]: !prev[sizeKey] }));
@@ -221,6 +247,20 @@ function Index() {
 
   const collapseAllSizes = () => {
     setOpenSizes({});
+  };
+
+  const toggleCategory = (catKey: string) => {
+    setOpenCategories((prev) => ({ ...prev, [catKey]: !prev[catKey] }));
+  };
+
+  const expandAllCategories = () => {
+    const all: Record<string, boolean> = {};
+    for (const c of categories) all[c.category] = true;
+    setOpenCategories(all);
+  };
+
+  const collapseAllCategories = () => {
+    setOpenCategories({});
   };
 
   // Generate MySQL dump content specifically for database 'inventory' (Aiven Cloud MySQL)
@@ -596,11 +636,52 @@ ${inventoryValues.join(",\n")};`
                 })}
               </TabsContent>
 
-              {/* TAB 2: PER PRODUK */}
-              <TabsContent value="product" className="mt-4 space-y-2.5">
-                {grouped.map((g, i) => (
-                  <ProductCard key={i} g={g} />
-                ))}
+              {/* TAB 2: PER PRODUK (3 KATEGORI SKU: HITAM, HIJAU, BITUMAX) */}
+              <TabsContent value="product" className="mt-4 space-y-3 sm:space-y-4">
+                {/* TOOLBAR FOR CATEGORIES */}
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between px-1">
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-foreground flex items-center gap-2">
+                      <span>3 Kategori SKU Produk</span>
+                      <Badge variant="outline" className="text-[10px] font-bold py-0.5 px-2 bg-primary/10 text-primary border-primary/30">
+                        Hitam · Hijau · Bitumax
+                      </Badge>
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Ukuran digabung & dipisahkan berdasarkan Qty pesanan (Qty 1 vs Qty 2)
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 self-end sm:self-auto">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1 px-2 text-primary font-medium hover:bg-primary/10"
+                      onClick={expandAllCategories}
+                    >
+                      <ChevronDown className="h-3 w-3" /> Buka Semua
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1 px-2 text-muted-foreground font-medium hover:bg-muted"
+                      onClick={collapseAllCategories}
+                    >
+                      <ChevronUp className="h-3 w-3" /> Tutup Semua
+                    </Button>
+                  </div>
+                </div>
+
+                {/* CATEGORY CARDS */}
+                <div className="space-y-3">
+                  {categories.map((cat) => (
+                    <CategoryCard
+                      key={cat.category}
+                      cat={cat}
+                      isExpanded={openCategories[cat.category] ?? true}
+                      onToggle={() => toggleCategory(cat.category)}
+                    />
+                  ))}
+                </div>
               </TabsContent>
 
               {/* TAB 3: DETAIL MENTAH */}
@@ -615,6 +696,8 @@ ${inventoryValues.join(",\n")};`
                         <TableHeader>
                           <TableRow>
                             <TableHead className="text-xs">Nama Produk</TableHead>
+                            <TableHead className="w-24 text-xs">Kategori</TableHead>
+                            <TableHead className="w-28 text-xs">Seller SKU</TableHead>
                             <TableHead className="w-20 text-xs">Ukuran</TableHead>
                             <TableHead className="w-16 text-right text-xs">Qty</TableHead>
                           </TableRow>
@@ -623,6 +706,25 @@ ${inventoryValues.join(",\n")};`
                           {rows.map((r, i) => (
                             <TableRow key={i} className="text-xs">
                               <TableCell className="font-medium py-2.5 leading-snug">{r.name}</TableCell>
+                              <TableCell className="py-2.5">
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] px-2 py-0.5 font-bold uppercase ${
+                                    r.category === "hitam"
+                                      ? "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-300"
+                                      : r.category === "hijau"
+                                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                                      : r.category === "bitumax"
+                                      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                                      : "border-border bg-muted/40"
+                                  }`}
+                                >
+                                  {r.category}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="py-2.5 font-mono text-[11px] text-muted-foreground">
+                                {r.sku || "-"}
+                              </TableCell>
                               <TableCell className="py-2.5">
                                 <Badge variant={r.size ? "default" : "outline"} className="text-[10px] px-2 py-0.5 font-bold">
                                   {r.size ?? "-"}
@@ -740,6 +842,38 @@ ${inventoryValues.join(",\n")};`
                 <span>Perlindungan Stok: Kueri menggunakan <strong>GREATEST(0, stock - qty)</strong> sehingga stok <strong>tidak akan pernah minus</strong>.</span>
               </p>
             )}
+          </div>
+
+          {/* PILIHAN KATEGORI PRODUK UNTUK DISINKRON */}
+          <div className="space-y-1.5 pt-1">
+            <label className="text-xs font-bold text-foreground flex items-center justify-between">
+              <span>Filter Kategori yang Disimpan:</span>
+              <span className="text-[10px] text-muted-foreground font-normal">Pilih SKU target</span>
+            </label>
+            <div className="grid grid-cols-4 gap-1.5">
+              {[
+                { id: "all", label: "Semua", defaultName: "Aspal Emulsion Waterproofing Baru" },
+                { id: "hitam", label: "Hitam", defaultName: "Aspal Emulsion Waterproofing Baru" },
+                { id: "hijau", label: "Hijau", defaultName: "Aspal Emulsion Hijau" },
+                { id: "bitumax", label: "Bitumax", defaultName: "Bitumax Waterproofing" },
+              ].map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedDbCategory(c.id);
+                    setTargetProductName(c.defaultName);
+                  }}
+                  className={`py-1.5 px-2 rounded-lg border text-[11px] font-bold transition-all text-center ${
+                    selectedDbCategory === c.id
+                      ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/30"
+                      : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40"
+                  }`}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* INPUT FORM: TANGGAL & SALES CHANNEL & NAMA PRODUK */}
@@ -979,57 +1113,243 @@ function SizeCard({
   );
 }
 
-{/* PRODUCT CARD COMPONENT */}
-function ProductCard({ g }: { g: GroupedProduct }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+{/* CATEGORY CARD COMPONENT FOR 3 PRODUCT SKUS: HITAM, HIJAU, BITUMAX */}
+function CategoryCard({
+  cat,
+  isExpanded,
+  onToggle,
+}: {
+  cat: CategoryGroup;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const theme = {
+    hitam: {
+      headerBg: "bg-gradient-to-r from-slate-900 via-zinc-800 to-slate-900 dark:from-zinc-900 dark:to-zinc-800",
+      badgeColor: "bg-white/20 text-white border-white/20",
+      iconBg: "bg-white/20 text-white",
+      tagLabel: "SKU: aspalcair (Hitam Biasa)",
+    },
+    hijau: {
+      headerBg: "bg-gradient-to-r from-emerald-700 via-emerald-600 to-teal-700 dark:from-emerald-900 dark:to-teal-900",
+      badgeColor: "bg-white/20 text-white border-white/20",
+      iconBg: "bg-white/20 text-white",
+      tagLabel: "SKU: HIJAU (Aspal Hijau)",
+    },
+    bitumax: {
+      headerBg: "bg-gradient-to-r from-amber-700 via-orange-600 to-amber-700 dark:from-amber-900 dark:to-orange-950",
+      badgeColor: "bg-white/20 text-white border-white/20",
+      iconBg: "bg-white/20 text-white",
+      tagLabel: "SKU: Bitumax (Bitumax Waterproofing)",
+    },
+    lainnya: {
+      headerBg: "bg-gradient-to-r from-gray-700 to-gray-800",
+      badgeColor: "bg-white/20 text-white border-white/20",
+      iconBg: "bg-white/20 text-white",
+      tagLabel: "SKU Lainnya",
+    },
+  }[cat.category] || {
+    headerBg: "var(--gradient-primary)",
+    badgeColor: "bg-white/20 text-white",
+    iconBg: "bg-white/20 text-white",
+    tagLabel: cat.label,
+  };
+
+  const hasData = cat.totalQty > 0;
 
   return (
-    <Card className="overflow-hidden border border-border/60 shadow-xs hover:shadow-md transition-all rounded-xl sm:rounded-2xl">
-      <CardContent className="p-3.5 sm:p-4">
-        <div
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="flex cursor-pointer items-start justify-between gap-3"
-        >
-          <div className="flex items-start gap-2.5 sm:gap-3 min-w-0">
-            <div className="mt-0.5 flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Package className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-            </div>
-            <div className="min-w-0">
-              <h3 className={`font-semibold text-xs sm:text-sm leading-snug ${isExpanded ? "" : "line-clamp-2"}`}>
-                {g.name}
-              </h3>
-              <p className="mt-0.5 text-[10px] text-muted-foreground sm:text-xs">
-                {g.variants.length} varian ukuran · {isExpanded ? "Sembunyikan" : "Lihat rincian"}
-              </p>
-            </div>
+    <Card className="overflow-hidden border border-border/70 shadow-sm hover:shadow-md transition-all rounded-xl sm:rounded-2xl">
+      {/* CATEGORY ACCORDION HEADER */}
+      <div
+        onClick={onToggle}
+        className={`flex cursor-pointer select-none items-center justify-between px-3.5 py-3 sm:px-5 sm:py-4 text-white transition-all active:opacity-95 ${theme.headerBg}`}
+      >
+        <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+          <div className={`flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl shadow-xs backdrop-blur shrink-0 ${theme.iconBg}`}>
+            <Package className="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Badge variant="default" className="tabular-nums font-bold px-2.5 py-1 text-xs">
-              Total {g.totalQty}
-            </Badge>
-            <div className="text-muted-foreground">
-              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base sm:text-lg font-black tracking-tight">{cat.label}</h2>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] sm:text-xs font-semibold backdrop-blur border ${theme.badgeColor}`}>
+                {theme.tagLabel}
+              </span>
             </div>
+            <p className="text-[11px] opacity-85 sm:text-xs font-medium mt-0.5">
+              {hasData
+                ? `${cat.sizes.length} varian ukuran · ${cat.totalOrders} paket/pesanan`
+                : "Tidak ada produk pada file ini"}
+            </p>
           </div>
         </div>
 
-        {isExpanded && (
-          <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
-            {g.variants.map((v, j) => (
-              <div
-                key={j}
-                className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs"
-              >
-                <span className="font-bold text-primary">{v.size}</span>
-                <span className="tabular-nums font-bold text-foreground/90">
-                  × {v.qty}
-                </span>
-              </div>
-            ))}
+        <div className="flex items-center gap-2.5 sm:gap-4 shrink-0">
+          <div className="text-right">
+            <p className="text-[9px] sm:text-[11px] uppercase tracking-wider opacity-85 font-semibold">Total Barang</p>
+            <p className="text-lg sm:text-2xl font-black tabular-nums leading-none">
+              {cat.totalQty} <span className="text-xs font-normal opacity-85">pcs</span>
+            </p>
           </div>
-        )}
-      </CardContent>
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 backdrop-blur shrink-0 transition-transform">
+            {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </div>
+        </div>
+      </div>
+
+      {/* CATEGORY CONTENT */}
+      {isExpanded && (
+        <CardContent className="p-3 sm:p-4 bg-muted/10 space-y-3">
+          {!hasData ? (
+            <div className="text-center py-6 px-4 bg-card rounded-xl border border-dashed border-border/70 text-muted-foreground">
+              <p className="text-xs sm:text-sm font-semibold">
+                Tidak ada produk dengan SKU {cat.label} yang terdeteksi.
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Kata kunci pencarian: ({cat.skuPrefix}).
+              </p>
+            </div>
+          ) : (
+            cat.sizes.map((szGroup) => (
+              <CategorySizeBlock key={szGroup.size} szGroup={szGroup} catLabel={cat.label} />
+            ))
+          )}
+        </CardContent>
+      )}
     </Card>
+  );
+}
+
+{/* BLOCK FOR EACH SIZE WITHIN A CATEGORY */}
+function CategorySizeBlock({
+  szGroup,
+  catLabel,
+}: {
+  szGroup: CategorySizeGroup;
+  catLabel: string;
+}) {
+  const [showItems, setShowItems] = useState(false);
+
+  return (
+    <div className="rounded-xl border border-border/80 bg-card p-3 sm:p-4 shadow-2xs space-y-3">
+      {/* SIZE HEADER */}
+      <div className="flex items-center justify-between gap-3 border-b border-border/50 pb-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-black text-xs sm:text-sm shadow-xs shrink-0">
+            {szGroup.size}
+          </div>
+          <div className="min-w-0">
+            <h4 className="font-bold text-xs sm:text-sm text-foreground flex items-center gap-2">
+              <span>Ukuran {szGroup.size}</span>
+              <span className="text-[11px] font-normal text-muted-foreground">({szGroup.totalOrders} paket)</span>
+            </h4>
+            <p className="text-[10px] text-muted-foreground truncate">
+              {catLabel} · Rekap gabungan semua pesanan ukuran {szGroup.size}
+            </p>
+          </div>
+        </div>
+
+        <div className="text-right shrink-0">
+          <span className="text-[10px] text-muted-foreground block font-medium">Total Unit</span>
+          <Badge variant="default" className="text-xs sm:text-sm font-black tabular-nums px-2.5 py-0.5">
+            {szGroup.totalQty} pcs
+          </Badge>
+        </div>
+      </div>
+
+      {/* QTY TIERS: PEMISAHAN BERDASARKAN QTY PESANAN (QTY 1 VS QTY 2+) */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-[11px] font-bold text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <Layers className="h-3.5 w-3.5 text-primary" />
+            <span>Pemisahan Qty per Paket:</span>
+          </span>
+          <span className="text-[10px] font-normal">
+            {szGroup.qtyTiers.length} variasi jumlah
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 gap-2">
+          {szGroup.qtyTiers.map((tier) => {
+            const isSingle = tier.qtyPerOrder === 1;
+            return (
+              <div
+                key={tier.qtyPerOrder}
+                className={`rounded-xl border p-2.5 transition-all ${
+                  isSingle
+                    ? "border-blue-500/30 bg-blue-500/5 text-blue-950 dark:text-blue-100"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-950 dark:text-amber-100 shadow-2xs ring-1 ring-amber-500/20"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <Badge
+                    variant={isSingle ? "outline" : "default"}
+                    className={`text-[10px] font-bold px-1.5 py-0 ${
+                      isSingle
+                        ? "border-blue-500/40 text-blue-700 dark:text-blue-300"
+                        : "bg-amber-600 hover:bg-amber-600 text-white"
+                    }`}
+                  >
+                    {isSingle ? "Isi 1 (Qty 1)" : `Isi ${tier.qtyPerOrder} (Qty ${tier.qtyPerOrder}) ⭐`}
+                  </Badge>
+                  <span className="text-[11px] font-extrabold tabular-nums">
+                    {tier.totalQty} pcs
+                  </span>
+                </div>
+
+                <div className="mt-2 flex items-baseline justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground">Jumlah Paket:</span>
+                  <span className="text-base sm:text-lg font-black tabular-nums">
+                    {tier.orderCount} <span className="text-xs font-normal text-muted-foreground">paket</span>
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* TOGGLE PRODUCT DETAILS */}
+      <div className="pt-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowItems(!showItems)}
+          className="w-full h-8 text-[11px] font-semibold text-primary hover:bg-primary/10 justify-between px-2.5 rounded-lg border border-dashed border-primary/20"
+        >
+          <span>
+            {showItems ? "▲ Sembunyikan Rincian Produk" : `▼ Lihat Rincian ${szGroup.items.length} Baris Produk`}
+          </span>
+          <span className="text-[10px] text-muted-foreground font-normal">
+            {showItems ? "Tutup" : "Buka"}
+          </span>
+        </Button>
+
+        {showItems && (
+          <ul className="mt-2 divide-y divide-border/40 rounded-lg border border-border/60 bg-muted/20 overflow-hidden">
+            {szGroup.items.map((it, idx) => (
+              <li key={idx} className="p-2.5 text-xs flex items-start justify-between gap-2.5 hover:bg-muted/40 transition-colors">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-foreground leading-snug">{it.name}</p>
+                  {it.sku && (
+                    <span className="mt-1 inline-block font-mono text-[10px] text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded">
+                      SKU: {it.sku}
+                    </span>
+                  )}
+                </div>
+                <Badge
+                  variant={it.qty > 1 ? "default" : "secondary"}
+                  className={`tabular-nums font-bold shrink-0 text-xs ${
+                    it.qty > 1 ? "bg-amber-600 text-white" : ""
+                  }`}
+                >
+                  × {it.qty} {it.qty > 1 ? "(Qty 2+)" : ""}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }
 
