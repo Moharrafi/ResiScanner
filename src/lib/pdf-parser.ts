@@ -47,6 +47,21 @@ export type CategorySizeGroup = {
   }[];
 };
 
+export type FlattenedTierItem = {
+  key: string; // e.g. "1KG-1", "1KG-2"
+  size: string; // "1KG"
+  qtyPerOrder: number; // 1, 2, 3...
+  label: string; // "1KG" if qty === 1 else "1KG (2)"
+  orderCount: number; // e.g. 43
+  totalQty: number; // e.g. 43 or 6
+  items: {
+    raw: string;
+    name: string;
+    sku?: string | null;
+    qty: number;
+  }[];
+};
+
 export type CategoryGroup = {
   category: ProductCategory;
   label: string; // "Hitam (Biasa)", "Hijau", "Bitumax", "Lainnya"
@@ -54,6 +69,7 @@ export type CategoryGroup = {
   totalQty: number;
   totalOrders: number;
   sizes: CategorySizeGroup[];
+  tierItems: FlattenedTierItem[];
 };
 
 export function detectCategory(text: string, sku?: string | null): ProductCategory {
@@ -243,108 +259,135 @@ export async function extractRowsFromPdf(
     );
     const pageWeightInKg = extractPageWeightInKg(textLines);
 
-    // Detect the product table header on this page. We REQUIRE both a
-    // "Product Name"-style column AND a "Qty"-style column; otherwise the
-    // page is treated as non-tabular (e.g. shipping label) and skipped.
+    const pageRows: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[] = [];
+
+    // Detect the product table header on this page. Supports both formal table headers
+    // ("Product Name", "Seller SKU", "Qty") and shipping label packing slips.
     let qtyX: number | null = null;
     let nameX: number | null = null;
     let skuX: number | null = null;
     let headerY: number | null = null;
+
     for (const row of rows) {
-      const hasQty = row.find((r) => /^(qty|quantity|jumlah|jml)$/i.test(r.str.trim()));
+      const rowLine = row.map((r) => r.str).join(" ");
+      const hasQty = row.find((r) => /^(qty|quantity|jumlah|jml|total|pcs|kuantitas)$/i.test(r.str.trim()));
       const hasName = row.find((r) =>
-        /^(product\s*name|nama\s*produk|item|product)$/i.test(r.str.trim()),
+        /^(product\s*name|nama\s*produk|item|product|nama\s*barang|deskripsi|description|rincian\s*produk)$/i.test(
+          r.str.trim(),
+        ),
       );
-      const hasSku = row.find((r) =>
-        /^(seller\s*sku|sku|no\.?\s*sku|kode\s*sku)$/i.test(r.str.trim()),
-      );
-      if (hasQty && hasName) {
+      // Check for SKU header (single token or split like "Seller" + "SKU")
+      const hasSku =
+        row.find((r) => /^(seller\s*sku|sku|no\.?\s*sku|kode\s*sku|sku\s*penjual)$/i.test(r.str.trim())) ||
+        (/seller/i.test(rowLine) && /sku/i.test(rowLine)
+          ? row.find((r) => /sku/i.test(r.str)) || row.find((r) => /seller/i.test(r.str))
+          : null);
+
+      if (hasQty && (hasName || hasSku)) {
         qtyX = hasQty.x;
-        nameX = hasName.x;
+        nameX = hasName ? hasName.x : hasSku!.x;
         if (hasSku) skuX = hasSku.x;
+        headerY = row[0].y;
+        break;
+      } else if (hasSku && !hasQty) {
+        skuX = hasSku.x;
+        nameX = hasName ? hasName.x : hasSku.x;
         headerY = row[0].y;
         break;
       }
     }
-    if (qtyX == null || nameX == null || headerY == null) continue; // no table on this page
 
-    // Only consider rows below the header
-    const bodyRows = rows.filter((r) => r[0].y < headerY!);
+    if (headerY != null) {
+      // Only consider rows below the header
+      const bodyRows = rows.filter((r) => r[0].y < headerY!);
 
-    let current: { name: string; sku?: string | null; qty: number; pageWeightInKg?: number | null } | null = null;
+      let current: { name: string; sku?: string | null; qty: number; pageWeightInKg?: number | null } | null = null;
 
-    const flush = () => {
-      if (current && current.name.trim()) {
-        const unitWeightSize = computeUnitWeightSize(current.pageWeightInKg ?? null, current.qty);
-        let finalSku = current.sku ? current.sku.trim() : null;
-        if (!finalSku) {
-          const m = current.name.match(/\b(aspalcair\w*|hijau\w*|bitumax\w*)\b/i);
-          if (m) finalSku = m[1];
+      const flush = () => {
+        if (current && current.name.trim()) {
+          const unitWeightSize = computeUnitWeightSize(current.pageWeightInKg ?? null, current.qty);
+          let finalSku = current.sku ? current.sku.trim() : null;
+          if (!finalSku) {
+            const m = current.name.match(/\b(HIJAU\w*|aspalcair\w*|bitumax\w*)\b/i);
+            if (m) finalSku = m[1];
+          }
+          pageRows.push({
+            name: current.name.replace(/\s+/g, " ").trim(),
+            sku: finalSku,
+            qty: current.qty,
+            pageWeightSize: unitWeightSize,
+          });
         }
-        allRows.push({
-          name: current.name.replace(/\s+/g, " ").trim(),
-          sku: finalSku,
-          qty: current.qty,
-          pageWeightSize: unitWeightSize,
-        });
-      }
-      current = null;
-    };
+        current = null;
+      };
 
-    for (const row of bodyRows) {
-      const sorted = [...row].sort((a, b) => a.x - b.x);
-      // qty cell: an integer token close to the Qty column x
-      const qtyCell = sorted.find(
-        (r) => Math.abs(r.x - qtyX!) < 60 && /^\d{1,4}$/.test(r.str.trim()),
-      );
+      for (const row of bodyRows) {
+        const sorted = [...row].sort((a, b) => a.x - b.x);
+        const rowText = sorted.map((r) => r.str).join(" ");
 
-      // SKU cell if skuX is detected
-      let skuCellText: string | null = null;
-      if (skuX != null) {
-        const skuCells = sorted.filter(
-          (r) => Math.abs(r.x - skuX!) < 70 && r !== qtyCell && !/^(product|item|qty|nama)/i.test(r.str.trim()),
-        );
-        if (skuCells.length > 0) {
-          skuCellText = skuCells.map((r) => r.str).join(" ").trim();
+        // Check if there's an integer cell for quantity
+        const qtyCell =
+          qtyX != null
+            ? sorted.find((r) => Math.abs(r.x - qtyX!) < 80 && /^\d{1,4}$/.test(r.str.trim()))
+            : sorted.find((r) => /^\d{1,3}$/.test(r.str.trim()) && r.x > (nameX ?? 0) + 40);
+
+        // Scan all tokens in this row for explicit SKU patterns
+        let skuFound: string | null = null;
+        const skuMatch = rowText.match(/\b(HIJAU\w*|aspalcair\w*|bitumax\w*)\b/i);
+        if (skuMatch) {
+          skuFound = skuMatch[1];
+        }
+
+        // Text cells on this row (exclude only the qtyCell itself)
+        const textCells = sorted.filter((r) => r !== qtyCell && r.x >= (nameX != null ? nameX - 25 : 0));
+        const lineText = textCells.map((r) => r.str).join(" ").trim();
+
+        if (qtyCell && (lineText || skuFound)) {
+          flush();
+          current = {
+            name: (lineText || skuFound || "").replace(/\bDefault\b/g, " "),
+            sku: skuFound,
+            qty: parseInt(qtyCell.str.trim(), 10) || 1,
+            pageWeightInKg,
+          };
+        } else if (current && (lineText || skuFound)) {
+          // continuation of the previous product's multi-line name
+          if (lineText) current.name += " " + lineText.replace(/\bDefault\b/g, " ");
+          if (skuFound && !current.sku) current.sku = skuFound;
+        } else if (!lineText && !qtyCell && !skuFound) {
+          // empty tabular row between products
         }
       }
+      flush();
+    }
 
-      // Max coordinate for product name: don't cross into SKU or QTY column
-      const maxNameX =
-        skuX != null && skuX > nameX! + 30
-          ? skuX - 15
-          : qtyCell
-            ? qtyCell.x - 15
-            : qtyX! - 25;
+    // 2. FALLBACK SCANNER: If no rows were extracted by table parser, scan all text on this page
+    // (Crucial for courier shipping labels where Seller SKU is printed without a formal table header)
+    if (pageRows.length === 0) {
+      for (const line of textLines) {
+        const skuMatches = [
+          ...line.matchAll(/\b(HIJAU\d*(?:KG|G|L)?|aspalcair\d*(?:kg|g|l)?|Bitumax\d*(?:kg|g|l)?)\b/gi),
+        ];
+        for (const sm of skuMatches) {
+          const skuToken = sm[0];
+          let qty = 1;
+          const qtyMatch = line.match(/(?:x|qty|jml)\s*:?\s*(\d{1,3})\b/i);
+          if (qtyMatch) {
+            qty = parseInt(qtyMatch[1], 10) || 1;
+          }
+          const unitWeightSize = computeUnitWeightSize(pageWeightInKg ?? null, qty);
 
-      const nameHere = sorted.filter(
-        (r) => r.x >= nameX! - 20 && r.x <= maxNameX && r !== qtyCell,
-      );
-      const nameText = nameHere.map((r) => r.str).join(" ").trim();
-
-      // If SKU was not separated by column, check inside nameText
-      if (!skuCellText && nameText) {
-        const m = nameText.match(/\b(aspalcair\w*|hijau\w*|bitumax\w*)\b/i);
-        if (m) skuCellText = m[1];
-      }
-
-      if (qtyCell && (nameText || skuCellText)) {
-        flush();
-        current = {
-          name: (nameText || skuCellText || "").replace(/\bDefault\b/g, " "),
-          sku: skuCellText,
-          qty: parseInt(qtyCell.str.trim(), 10),
-          pageWeightInKg,
-        };
-      } else if (current && (nameText || skuCellText)) {
-        // continuation of the previous product's multi-line name
-        if (nameText) current.name += " " + nameText.replace(/\bDefault\b/g, " ");
-        if (skuCellText && !current.sku) current.sku = skuCellText;
-      } else if (!nameText && !qtyCell && !skuCellText) {
-        // an entirely empty tabular row between products — end current entry
+          pageRows.push({
+            name: line.trim() || skuToken,
+            sku: skuToken,
+            qty,
+            pageWeightSize: unitWeightSize,
+          });
+        }
       }
     }
-    flush();
+
+    allRows.push(...pageRows);
   }
 
   return allRows;
@@ -493,6 +536,23 @@ export function parseProducts(
     const totalCatQty = sizes.reduce((acc, s) => acc + s.totalQty, 0);
     const totalCatOrders = sizes.reduce((acc, s) => acc + s.totalOrders, 0);
 
+    // Direct flattened list: 1KG, 1KG (2), 5KG, 5KG (2), etc.
+    const tierItems: FlattenedTierItem[] = [];
+    for (const sz of sizes) {
+      for (const tier of sz.qtyTiers) {
+        const label = tier.qtyPerOrder === 1 ? sz.size : `${sz.size} (${tier.qtyPerOrder})`;
+        tierItems.push({
+          key: `${sz.size}-${tier.qtyPerOrder}`,
+          size: sz.size,
+          qtyPerOrder: tier.qtyPerOrder,
+          label,
+          orderCount: tier.orderCount,
+          totalQty: tier.totalQty,
+          items: tier.items,
+        });
+      }
+    }
+
     return {
       category: meta.category,
       label: meta.label,
@@ -500,6 +560,7 @@ export function parseProducts(
       totalQty: totalCatQty,
       totalOrders: totalCatOrders,
       sizes,
+      tierItems,
     };
   });
 
@@ -541,6 +602,23 @@ export function parseProducts(
     sizes.sort((a, b) =>
       a.size.localeCompare(b.size, undefined, { numeric: true, sensitivity: "base" }),
     );
+
+    const tierItems: FlattenedTierItem[] = [];
+    for (const sz of sizes) {
+      for (const tier of sz.qtyTiers) {
+        const label = tier.qtyPerOrder === 1 ? sz.size : `${sz.size} (${tier.qtyPerOrder})`;
+        tierItems.push({
+          key: `${sz.size}-${tier.qtyPerOrder}`,
+          size: sz.size,
+          qtyPerOrder: tier.qtyPerOrder,
+          label,
+          orderCount: tier.orderCount,
+          totalQty: tier.totalQty,
+          items: tier.items,
+        });
+      }
+    }
+
     categories.push({
       category: "lainnya",
       label: "Lainnya",
@@ -548,6 +626,7 @@ export function parseProducts(
       totalQty: sizes.reduce((acc, s) => acc + s.totalQty, 0),
       totalOrders: sizes.reduce((acc, s) => acc + s.totalOrders, 0),
       sizes,
+      tierItems,
     });
   }
 
