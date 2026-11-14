@@ -642,7 +642,7 @@ ${inventoryValues.join(",\n")};`
                   <div>
                     <h3 className="text-xs sm:text-sm font-bold text-foreground flex items-center gap-2">
                       <span>3 Kategori SKU Produk</span>
-                      <Badge variant="outline" className="text-[10px] font-bold py-0.5 px-2 bg-primary/10 text-primary border-primary/30">
+                      <Badge variant="secondary" className="text-[10px] font-medium py-0.5 px-2 text-muted-foreground border border-border/60">
                         Hitam · Hijau · Bitumax
                       </Badge>
                     </h3>
@@ -654,7 +654,7 @@ ${inventoryValues.join(",\n")};`
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 text-[11px] gap-1 px-2 text-primary font-medium hover:bg-primary/10"
+                      className="h-7 text-[11px] gap-1 px-2 text-muted-foreground hover:text-foreground font-medium hover:bg-muted"
                       onClick={expandAllCategories}
                     >
                       <ChevronDown className="h-3 w-3" /> Buka Semua
@@ -662,7 +662,7 @@ ${inventoryValues.join(",\n")};`
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 text-[11px] gap-1 px-2 text-muted-foreground font-medium hover:bg-muted"
+                      className="h-7 text-[11px] gap-1 px-2 text-muted-foreground hover:text-foreground font-medium hover:bg-muted"
                       onClick={collapseAllCategories}
                     >
                       <ChevronUp className="h-3 w-3" /> Tutup Semua
@@ -1042,25 +1042,24 @@ function SizeCard({
   };
 
   return (
-    <Card className="overflow-hidden border border-border/70 shadow-xs hover:shadow-md transition-all rounded-xl sm:rounded-2xl">
+    <Card className="overflow-hidden border border-border/80 shadow-2xs hover:shadow-xs transition-all rounded-xl sm:rounded-2xl bg-card">
       {/* ACCORDION HEADER (MINIMIZED BY DEFAULT) */}
       <div
         onClick={onToggle}
-        className="flex cursor-pointer select-none items-center justify-between px-3.5 py-3 sm:px-5 sm:py-4 text-primary-foreground transition-all active:opacity-90"
-        style={{ background: "var(--gradient-primary)" }}
+        className="flex cursor-pointer select-none items-center justify-between px-3.5 py-3 sm:px-5 sm:py-3.5 transition-colors hover:bg-muted/30 active:bg-muted/50"
       >
         <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-          <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg sm:rounded-xl bg-white/20 backdrop-blur shrink-0">
-            <Ruler className="h-4 w-4 sm:h-5 sm:w-5" />
+          <div className="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-lg bg-muted text-foreground/80 shrink-0">
+            <Ruler className="h-4 w-4" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-base sm:text-lg font-black tracking-tight">{s.size}</p>
-              <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] sm:text-xs font-semibold backdrop-blur">
+              <p className="text-sm sm:text-base font-bold tracking-tight text-foreground">{s.size}</p>
+              <span className="rounded-md bg-muted px-2 py-0.5 text-[10px] sm:text-xs font-medium text-muted-foreground border border-border/60">
                 {s.items.length} produk
               </span>
             </div>
-            <p className="text-[10px] opacity-80 sm:text-xs font-medium">
+            <p className="text-[10px] text-muted-foreground sm:text-xs font-normal">
               {isExpanded ? "Ketuk untuk minimize" : "Ketuk untuk tampilkan rincian"}
             </p>
           </div>
@@ -1068,10 +1067,12 @@ function SizeCard({
 
         <div className="flex items-center gap-2.5 sm:gap-4 shrink-0">
           <div className="text-right">
-            <p className="text-[9px] sm:text-xs uppercase tracking-wider opacity-85 font-semibold">Total Qty</p>
-            <p className="text-lg sm:text-2xl font-black tabular-nums leading-none">{s.totalQty}</p>
+            <p className="text-[9px] sm:text-xs uppercase tracking-wider text-muted-foreground font-medium">Total Qty</p>
+            <p className="text-base sm:text-xl font-bold tabular-nums text-foreground leading-tight">
+              {s.totalQty} <span className="text-xs font-normal text-muted-foreground">pcs</span>
+            </p>
           </div>
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 backdrop-blur shrink-0 transition-transform">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted shrink-0 transition-transform">
             {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </div>
         </div>
@@ -1079,7 +1080,7 @@ function SizeCard({
 
       {/* ITEMS LIST (EXPANDABLE) */}
       {isExpanded && (
-        <CardContent className="p-0 bg-card">
+        <CardContent className="p-0 bg-card border-t border-border/60">
           <ul className="divide-y divide-border/40">
             {s.items.map((it, j) => {
               const isItemExpanded = !!expandedItemIdxs[j];
@@ -1087,10 +1088,9 @@ function SizeCard({
                 <li
                   key={j}
                   onClick={(e) => toggleItem(j, e)}
-                  className="flex cursor-pointer items-start justify-between gap-3 px-3.5 py-3 sm:px-5 sm:py-3.5 transition-colors hover:bg-muted/40 active:bg-muted/70"
+                  className="flex cursor-pointer items-start justify-between gap-3 px-3.5 py-2.5 sm:px-5 sm:py-3 transition-colors hover:bg-muted/40 active:bg-muted/70"
                 >
                   <div className="min-w-0 flex-1">
-                    {/* TRUNCATED DESCRIPTIONS BY DEFAULT FOR COMPACT MOBILE VIEW */}
                     <p
                       className={`text-xs sm:text-sm font-medium leading-snug text-foreground transition-all ${
                         isItemExpanded ? "" : "line-clamp-2"
@@ -1098,13 +1098,13 @@ function SizeCard({
                     >
                       {it.name}
                     </p>
-                    <span className="mt-1 inline-block text-[10px] text-primary font-semibold hover:underline">
+                    <span className="mt-1 inline-block text-[10px] text-muted-foreground hover:text-foreground font-medium">
                       {isItemExpanded ? "▲ Sembunyikan" : "▼ Lihat nama lengkap"}
                     </span>
                   </div>
                   <Badge
                     variant="secondary"
-                    className="tabular-nums shrink-0 border border-primary/20 bg-primary/10 text-primary font-extrabold px-2.5 py-1 text-xs sm:text-sm shadow-xs rounded-lg"
+                    className="tabular-nums shrink-0 font-bold px-2 py-0.5 text-xs rounded-md"
                   >
                     × {it.qty}
                   </Badge>
@@ -1128,59 +1128,56 @@ function CategoryCard({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const theme = {
+  const meta = {
     hitam: {
-      headerBg: "bg-gradient-to-r from-slate-900 via-zinc-800 to-slate-900 dark:from-zinc-900 dark:to-zinc-800",
-      badgeColor: "bg-white/20 text-white border-white/20",
-      iconBg: "bg-white/20 text-white",
-      tagLabel: "SKU: aspalcair (Hitam Biasa)",
+      accentBorder: "border-l-zinc-700 dark:border-l-zinc-400",
+      badge: "border-zinc-200 bg-zinc-100 text-zinc-800 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-200",
+      skuLabel: "aspalcair",
     },
     hijau: {
-      headerBg: "bg-gradient-to-r from-emerald-700 via-emerald-600 to-teal-700 dark:from-emerald-900 dark:to-teal-900",
-      badgeColor: "bg-white/20 text-white border-white/20",
-      iconBg: "bg-white/20 text-white",
-      tagLabel: "SKU: HIJAU (Aspal Hijau)",
+      accentBorder: "border-l-emerald-600 dark:border-l-emerald-500",
+      badge: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+      skuLabel: "HIJAU",
     },
     bitumax: {
-      headerBg: "bg-gradient-to-r from-amber-700 via-orange-600 to-amber-700 dark:from-amber-900 dark:to-orange-950",
-      badgeColor: "bg-white/20 text-white border-white/20",
-      iconBg: "bg-white/20 text-white",
-      tagLabel: "SKU: Bitumax (Bitumax Waterproofing)",
+      accentBorder: "border-l-amber-600 dark:border-l-amber-500",
+      badge: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+      skuLabel: "Bitumax",
     },
     lainnya: {
-      headerBg: "bg-gradient-to-r from-gray-700 to-gray-800",
-      badgeColor: "bg-white/20 text-white border-white/20",
-      iconBg: "bg-white/20 text-white",
-      tagLabel: "SKU Lainnya",
+      accentBorder: "border-l-muted-foreground",
+      badge: "border-border bg-muted text-muted-foreground",
+      skuLabel: "Lainnya",
     },
   }[cat.category] || {
-    headerBg: "var(--gradient-primary)",
-    badgeColor: "bg-white/20 text-white",
-    iconBg: "bg-white/20 text-white",
-    tagLabel: cat.label,
+    accentBorder: "border-l-primary",
+    badge: "border-border bg-muted text-muted-foreground",
+    skuLabel: cat.label,
   };
 
   const hasData = cat.totalQty > 0;
 
   return (
-    <Card className="overflow-hidden border border-border/70 shadow-sm hover:shadow-md transition-all rounded-xl sm:rounded-2xl">
+    <Card
+      className={`overflow-hidden border border-border/80 shadow-2xs hover:shadow-xs transition-all rounded-xl sm:rounded-2xl border-l-[4px] ${meta.accentBorder} bg-card`}
+    >
       {/* CATEGORY ACCORDION HEADER */}
       <div
         onClick={onToggle}
-        className={`flex cursor-pointer select-none items-center justify-between px-3.5 py-3 sm:px-5 sm:py-4 text-white transition-all active:opacity-95 ${theme.headerBg}`}
+        className="flex cursor-pointer select-none items-center justify-between px-3.5 py-3 sm:px-5 sm:py-3.5 transition-colors hover:bg-muted/30 active:bg-muted/50"
       >
         <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
-          <div className={`flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl shadow-xs backdrop-blur shrink-0 ${theme.iconBg}`}>
-            <Package className="h-5 w-5 sm:h-6 sm:w-6" />
+          <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-lg sm:rounded-xl bg-muted text-foreground/80 shrink-0">
+            <Package className="h-4 w-4 sm:h-5 sm:w-5" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base sm:text-lg font-black tracking-tight">{cat.label}</h2>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] sm:text-xs font-semibold backdrop-blur border ${theme.badgeColor}`}>
-                {theme.tagLabel}
+              <h2 className="text-sm sm:text-base font-bold tracking-tight text-foreground">{cat.label}</h2>
+              <span className={`rounded-md px-2 py-0.5 text-[10px] sm:text-xs font-semibold border ${meta.badge}`}>
+                SKU: {meta.skuLabel}
               </span>
             </div>
-            <p className="text-[11px] opacity-85 sm:text-xs font-medium mt-0.5">
+            <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
               {hasData
                 ? `${cat.sizes.length} varian ukuran · ${cat.totalOrders} paket/pesanan`
                 : "Tidak ada produk pada file ini"}
@@ -1190,12 +1187,12 @@ function CategoryCard({
 
         <div className="flex items-center gap-2.5 sm:gap-4 shrink-0">
           <div className="text-right">
-            <p className="text-[9px] sm:text-[11px] uppercase tracking-wider opacity-85 font-semibold">Total Barang</p>
-            <p className="text-lg sm:text-2xl font-black tabular-nums leading-none">
-              {cat.totalQty} <span className="text-xs font-normal opacity-85">pcs</span>
+            <p className="text-[9px] sm:text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Total Barang</p>
+            <p className="text-base sm:text-xl font-bold tabular-nums text-foreground leading-tight">
+              {cat.totalQty} <span className="text-xs font-normal text-muted-foreground">pcs</span>
             </p>
           </div>
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 backdrop-blur shrink-0 transition-transform">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted shrink-0 transition-transform">
             {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </div>
         </div>
@@ -1203,13 +1200,13 @@ function CategoryCard({
 
       {/* CATEGORY CONTENT */}
       {isExpanded && (
-        <CardContent className="p-3 sm:p-4 bg-muted/10 space-y-3">
+        <CardContent className="p-3 sm:p-4 bg-muted/15 border-t border-border/60 space-y-3">
           {!hasData ? (
             <div className="text-center py-6 px-4 bg-card rounded-xl border border-dashed border-border/70 text-muted-foreground">
-              <p className="text-xs sm:text-sm font-semibold">
+              <p className="text-xs sm:text-sm font-medium">
                 Tidak ada produk dengan SKU {cat.label} yang terdeteksi.
               </p>
-              <p className="text-[11px] text-muted-foreground mt-1">
+              <p className="text-[11px] text-muted-foreground mt-0.5">
                 Kata kunci pencarian: ({cat.skuPrefix}).
               </p>
             </div>
@@ -1217,7 +1214,7 @@ function CategoryCard({
             <div className="space-y-2.5">
               <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
                 <span className="font-semibold text-foreground text-[11px]">Rincian Ukuran & Jumlah Pesanan:</span>
-                <span className="text-[10px]">{cat.tierItems?.length ?? 0} variasi</span>
+                <span className="text-[10px] text-muted-foreground">{cat.tierItems?.length ?? 0} variasi</span>
               </div>
 
               {/* DIRECT LIST: 1kg, 1kg (2), 5kg, 5kg (2), dst. */}
@@ -1227,38 +1224,27 @@ function CategoryCard({
                   return (
                     <div
                       key={item.key}
-                      className={`flex items-center justify-between px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border transition-all ${
-                        isMulti
-                          ? "border-amber-500/50 bg-amber-500/10 dark:bg-amber-500/15 shadow-2xs ring-1 ring-amber-500/30"
-                          : "border-border/80 bg-card hover:bg-muted/40 shadow-2xs"
-                      }`}
+                      className="flex items-center justify-between px-3 py-2.5 sm:px-3.5 sm:py-2.5 rounded-xl border border-border/70 bg-card hover:bg-muted/30 transition-colors shadow-2xs"
                     >
                       <div className="flex items-center gap-2 min-w-0">
-                        <Badge
-                          variant={isMulti ? "default" : "outline"}
-                          className={`text-xs sm:text-sm font-black px-2.5 py-0.5 rounded-lg shrink-0 ${
-                            isMulti
-                              ? "bg-amber-600 text-white hover:bg-amber-600 shadow-xs"
-                              : "border-primary/40 bg-primary/10 text-primary"
-                          }`}
-                        >
+                        <span className="text-xs sm:text-sm font-bold text-foreground bg-muted px-2.5 py-0.5 rounded-md tracking-tight shrink-0">
                           {item.label}
-                        </Badge>
+                        </span>
                         {isMulti && (
-                          <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 bg-amber-500/15 px-1.5 py-0.5 rounded-md truncate">
-                            ⭐ Isi {item.qtyPerOrder}
+                          <span className="text-[10px] font-medium text-muted-foreground bg-muted/70 px-1.5 py-0.5 rounded border border-border/60 shrink-0">
+                            Isi {item.qtyPerOrder}
                           </span>
                         )}
                       </div>
 
                       <div className="flex items-baseline gap-2 shrink-0 text-right">
                         <div>
-                          <span className="text-base sm:text-lg font-black tabular-nums text-foreground">
+                          <span className="text-sm sm:text-base font-bold tabular-nums text-foreground">
                             {item.orderCount}
                           </span>
-                          <span className="ml-1 text-xs text-muted-foreground font-semibold">paket</span>
+                          <span className="ml-1 text-xs text-muted-foreground font-medium">paket</span>
                         </div>
-                        <span className="text-[10px] font-bold tabular-nums text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded">
+                        <span className="text-[11px] font-medium tabular-nums text-muted-foreground">
                           ({item.totalQty} pcs)
                         </span>
                       </div>
@@ -1270,8 +1256,8 @@ function CategoryCard({
               {/* FOOTER TOTAL & TOGGLE PRODUCT DETAILS */}
               <div className="pt-2 border-t border-border/50 flex flex-col gap-2">
                 <div className="flex items-center justify-between text-xs px-1 text-muted-foreground">
-                  <span className="font-semibold">Total {cat.label}:</span>
-                  <span className="font-black text-foreground">
+                  <span className="font-medium">Total {cat.label}:</span>
+                  <span className="font-bold text-foreground">
                     {cat.totalOrders} paket <span className="font-normal text-muted-foreground">({cat.totalQty} pcs)</span>
                   </span>
                 </div>
@@ -1297,7 +1283,7 @@ function CategoryProductsList({ cat }: { cat: CategoryGroup }) {
         variant="ghost"
         size="sm"
         onClick={() => setShowItems(!showItems)}
-        className="w-full h-7 text-[11px] font-semibold text-primary hover:bg-primary/10 justify-between px-2 rounded-lg border border-dashed border-primary/20"
+        className="w-full h-7 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 justify-between px-2.5 rounded-lg border border-border/60"
       >
         <span>
           {showItems ? "▲ Sembunyikan Rincian Baris Produk" : `▼ Lihat Rincian ${allItems.length} Baris Produk`}
@@ -1308,22 +1294,20 @@ function CategoryProductsList({ cat }: { cat: CategoryGroup }) {
       </Button>
 
       {showItems && (
-        <ul className="mt-2 divide-y divide-border/40 rounded-lg border border-border/60 bg-muted/20 overflow-hidden max-h-60 overflow-y-auto">
+        <ul className="mt-2 divide-y divide-border/40 rounded-lg border border-border/60 bg-card overflow-hidden max-h-60 overflow-y-auto">
           {allItems.map((it, idx) => (
             <li key={idx} className="p-2 text-[11px] flex items-start justify-between gap-2 hover:bg-muted/40 transition-colors">
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-foreground leading-snug">{it.name}</p>
                 {it.sku && (
-                  <span className="mt-0.5 inline-block font-mono text-[10px] text-primary/80 bg-primary/10 px-1 py-0.2 rounded">
+                  <span className="mt-0.5 inline-block font-mono text-[10px] text-muted-foreground bg-muted px-1.5 py-0.2 rounded">
                     SKU: {it.sku}
                   </span>
                 )}
               </div>
               <Badge
-                variant={it.qty > 1 ? "default" : "secondary"}
-                className={`tabular-nums font-bold shrink-0 text-[10px] ${
-                  it.qty > 1 ? "bg-amber-600 text-white" : ""
-                }`}
+                variant="secondary"
+                className="tabular-nums font-semibold shrink-0 text-[10px]"
               >
                 × {it.qty} {it.qty > 1 ? `(Qty ${it.qty})` : ""}
               </Badge>
@@ -1339,7 +1323,6 @@ function StatCard({
   icon,
   label,
   value,
-  accent,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -1347,27 +1330,13 @@ function StatCard({
   accent?: boolean;
 }) {
   return (
-    <Card
-      className="border-0 overflow-hidden rounded-xl sm:rounded-2xl"
-      style={{
-        boxShadow: "var(--shadow-soft)",
-        background: accent ? "var(--gradient-primary)" : undefined,
-      }}
-    >
+    <Card className="border border-border/80 overflow-hidden rounded-xl bg-card shadow-2xs">
       <CardContent className="p-3 sm:p-4">
-        <div
-          className={`flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold uppercase tracking-wider ${
-            accent ? "text-primary-foreground/85" : "text-muted-foreground"
-          }`}
-        >
+        <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {icon}
           <span className="truncate">{label}</span>
         </div>
-        <p
-          className={`mt-1 text-xl sm:text-2xl font-black tabular-nums ${
-            accent ? "text-primary-foreground" : "text-foreground"
-          }`}
-        >
+        <p className="mt-1 text-xl sm:text-2xl font-bold tabular-nums text-foreground">
           {value}
         </p>
       </CardContent>
