@@ -12,5 +12,6 @@ android/app/build
 android/build
 android/.gradle
 android/.idea
+.idea
 android/local.properties
 *.apk
