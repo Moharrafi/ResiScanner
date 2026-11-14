@@ -73,31 +73,28 @@ export type CategoryGroup = {
 };
 
 export function detectCategory(text: string, sku?: string | null): ProductCategory {
-  const combined = `${text} ${sku ?? ""}`.toLowerCase();
+  const s = (sku ?? "").toLowerCase();
+  const t = text.toLowerCase();
 
-  // 1. Bitumax (case-insensitive)
-  if (combined.includes("bitumax")) {
-    return "bitumax";
-  }
+  // 1. Check SKU first (most specific and authoritative)
+  if (s.includes("bitumax")) return "bitumax";
+  if (s.includes("hijau") || s.includes("green")) return "hijau";
+  if (s.includes("aspalcair") || s.includes("hitam") || s.includes("black")) return "hitam";
 
-  // 2. Hijau (case-insensitive)
-  if (combined.includes("hijau") || combined.includes("green")) {
-    return "hijau";
-  }
-
-  // 3. Hitam (biasa / reguler)
-  // User explicitly noted: "ada yang biasa itu disebut hitam, lalu ada hijau lalu ada bitumax"
+  // 2. Check product name text
+  if (t.includes("bitumax")) return "bitumax";
+  if (t.includes("hijau") || t.includes("green")) return "hijau";
   if (
-    combined.includes("hitam") ||
-    combined.includes("black") ||
-    combined.includes("aspalcair") ||
-    combined.includes("aspal cair") ||
-    combined.includes("aspal")
+    t.includes("hitam") ||
+    t.includes("black") ||
+    t.includes("aspalcair") ||
+    t.includes("aspal cair") ||
+    t.includes("aspal")
   ) {
     return "hitam";
   }
 
-  // Default to regular hitam
+  // 3. Fallback to regular hitam
   return "hitam";
 }
 
@@ -305,14 +302,24 @@ export async function extractRowsFromPdf(
 
       const flush = () => {
         if (current && current.name.trim()) {
+          const trimmedName = current.name.replace(/\s+/g, " ").trim();
+          // Filter out table summary / footer text accidentally captured
+          if (
+            /^(qty\s*total|total\s*qty|total\s*item|total\s*unit|order\s*id|tt\s*order\s*id)/i.test(
+              trimmedName,
+            )
+          ) {
+            current = null;
+            return;
+          }
           const unitWeightSize = computeUnitWeightSize(current.pageWeightInKg ?? null, current.qty);
           let finalSku = current.sku ? current.sku.trim() : null;
           if (!finalSku) {
-            const m = current.name.match(/\b(HIJAU\w*|aspalcair\w*|bitumax\w*)\b/i);
+            const m = trimmedName.match(/\b(HIJAU\w*|aspalcair\w*|bitumax\w*)\b/i);
             if (m) finalSku = m[1];
           }
           pageRows.push({
-            name: current.name.replace(/\s+/g, " ").trim(),
+            name: trimmedName,
             sku: finalSku,
             qty: current.qty,
             pageWeightSize: unitWeightSize,
@@ -323,7 +330,23 @@ export async function extractRowsFromPdf(
 
       for (const row of bodyRows) {
         const sorted = [...row].sort((a, b) => a.x - b.x);
-        const rowText = sorted.map((r) => r.str).join(" ");
+        const rowText = sorted.map((r) => r.str).join(" ").trim();
+
+        // Check if this row is a table summary / footer row (e.g. "Qty Total: 1", "Order ID: ...")
+        const isFooterRow =
+          /^(qty\s*total|total\s*qty|total\s*item|total\s*pesanan|total\s*barang|total\s*unit|total\s*:|subtotal|order\s*id|tt\s*order\s*id|no\.?\s*pesanan|no\.?\s*resi|tracking\s*no)\b/i.test(
+            rowText,
+          ) ||
+          sorted.some((it) =>
+            /^(qty\s*total:?|total\s*qty:?|total\s*item:?|total\s*:?|subtotal:?|order\s*id:?|tt\s*order\s*id:?|no\.?\s*pesanan:?)$/i.test(
+              it.str.trim(),
+            ),
+          );
+
+        if (isFooterRow) {
+          flush();
+          break; // Stop scanning table body once footer/summary row is reached
+        }
 
         // Check if there's an integer cell for quantity
         const qtyCell =

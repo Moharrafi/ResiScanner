@@ -84,12 +84,9 @@ function Index() {
   const [showAllFiles, setShowAllFiles] = useState(false);
   // Open size card accordions; empty means all are MINIMIZED by default on initial load
   const [openSizes, setOpenSizes] = useState<Record<string, boolean>>({});
-  // Open category accordions in "Per Produk" tab (Hitam, Hijau, Bitumax)
-  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({
-    hitam: true,
-    hijau: true,
-    bitumax: true,
-  });
+  // Open category accordions in "Per Produk" tab (Hitam, Hijau, Bitumax).
+  // Empty record means categories with items > 0 will auto-expand by default.
+  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
   // Category selected in DB Save modal (all, hitam, hijau, bitumax)
   const [selectedDbCategory, setSelectedDbCategory] = useState<string>("all");
   // Save DB Modal state
@@ -249,8 +246,8 @@ function Index() {
     setOpenSizes({});
   };
 
-  const toggleCategory = (catKey: string) => {
-    setOpenCategories((prev) => ({ ...prev, [catKey]: !prev[catKey] }));
+  const toggleCategory = (catKey: string, currentlyOpen: boolean) => {
+    setOpenCategories((prev) => ({ ...prev, [catKey]: !currentlyOpen }));
   };
 
   const expandAllCategories = () => {
@@ -260,7 +257,9 @@ function Index() {
   };
 
   const collapseAllCategories = () => {
-    setOpenCategories({});
+    const all: Record<string, boolean> = {};
+    for (const c of categories) all[c.category] = false;
+    setOpenCategories(all);
   };
 
   // Generate MySQL dump content specifically for database 'inventory' (Aiven Cloud MySQL)
@@ -673,14 +672,20 @@ ${inventoryValues.join(",\n")};`
 
                 {/* CATEGORY CARDS */}
                 <div className="space-y-3">
-                  {categories.map((cat) => (
-                    <CategoryCard
-                      key={cat.category}
-                      cat={cat}
-                      isExpanded={openCategories[cat.category] ?? true}
-                      onToggle={() => toggleCategory(cat.category)}
-                    />
-                  ))}
+                  {categories.map((cat) => {
+                    const isOpen =
+                      openCategories[cat.category] !== undefined
+                        ? openCategories[cat.category]
+                        : cat.totalQty > 0;
+                    return (
+                      <CategoryCard
+                        key={cat.category}
+                        cat={cat}
+                        isExpanded={isOpen}
+                        onToggle={() => toggleCategory(cat.category, isOpen)}
+                      />
+                    );
+                  })}
                 </div>
               </TabsContent>
 
