@@ -4,10 +4,12 @@ const config: CapacitorConfig = {
   appId: 'com.inventory.resi',
   appName: 'Resi Scanner',
   webDir: 'dist',
-  server: {
-    url: 'https://resi-scannerr.vercel.app',
-    cleartext: true,
-  },
+  // Local standalone bundle for APK:
+  // (Remove server.url so APK runs the embedded latest build directly offline)
+  // server: {
+  //   url: 'https://resi-scannerr.vercel.app',
+  //   cleartext: true,
+  // },
   android: {
     allowMixedContent: true,
   },
