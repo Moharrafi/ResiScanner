@@ -26,6 +26,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   ShieldAlert,
+  Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -595,7 +596,7 @@ ${inventoryValues.join(",\n")};`
                   <Boxes className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Per Produk
                 </TabsTrigger>
                 <TabsTrigger value="raw" className="gap-1 text-xs font-semibold sm:text-sm">
-                  <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Detail Mentah
+                  <Printer className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Print
                 </TabsTrigger>
               </TabsList>
 

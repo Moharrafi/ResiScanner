@@ -27,7 +27,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import type { ProductCategory, ProductRow } from "@/lib/pdf-parser";
+import { formatCategoryStampMark, type ProductCategory, type ProductRow } from "@/lib/pdf-parser";
 import { renderPdfPageForThermal, renderPdfPageToCanvas, renderPdfPageToDataUrl } from "@/lib/pdf-renderer";
 import {
   type BluetoothPrinterDevice,
@@ -67,6 +67,8 @@ type PdfPageCardData = {
   category: ProductCategory;
   items: ProductRow[];
   totalQty: number;
+  stampMark: string;
+  activeStampMark: string | null;
 };
 
 const CATEGORY_META: Record<
@@ -98,20 +100,33 @@ const CATEGORY_META: Record<
   },
 };
 
-// Shared in-memory preview cache keyed per File instance so replaced files never collide
-const previewDataUrlCache = new WeakMap<File, Map<number, string>>();
+// Shared in-memory preview cache keyed per File instance + page + stamp mark
+const previewDataUrlCache = new WeakMap<File, Map<string, string>>();
 
-function getCachedPreviewUrl(file: File, pageNumber: number): string | null {
-  return previewDataUrlCache.get(file)?.get(pageNumber) ?? null;
+function makePreviewCacheKey(pageNumber: number, stampMark: string | null): string {
+  return `${pageNumber}::${stampMark ?? "none"}`;
 }
 
-function setCachedPreviewUrl(file: File, pageNumber: number, url: string): void {
+function getCachedPreviewUrl(
+  file: File,
+  pageNumber: number,
+  stampMark: string | null,
+): string | null {
+  return previewDataUrlCache.get(file)?.get(makePreviewCacheKey(pageNumber, stampMark)) ?? null;
+}
+
+function setCachedPreviewUrl(
+  file: File,
+  pageNumber: number,
+  stampMark: string | null,
+  url: string,
+): void {
   let fileMap = previewDataUrlCache.get(file);
   if (!fileMap) {
-    fileMap = new Map<number, string>();
+    fileMap = new Map<string, string>();
     previewDataUrlCache.set(file, fileMap);
   }
-  fileMap.set(pageNumber, url);
+  fileMap.set(makePreviewCacheKey(pageNumber, stampMark), url);
 }
 
 export function PdfPreviewPrintTab({
@@ -179,6 +194,15 @@ export function PdfPreviewPrintTab({
       return "normal";
     }
   });
+  const [showStampMark, setShowStampMark] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
+      return typeof saved.showStampMark === "boolean" ? saved.showStampMark : true;
+    } catch {
+      return true;
+    }
+  });
 
   const paperWidthMm = useMemo(() => {
     const n = parseFloat(paperWidthInput);
@@ -206,10 +230,11 @@ export function PdfPreviewPrintTab({
           protocol,
           threshold,
           speedMode,
+          showStampMark,
         }),
       );
     } catch {}
-  }, [paperWidthMm, paperHeightMm, protocol, threshold, speedMode]);
+  }, [paperWidthMm, paperHeightMm, protocol, threshold, speedMode, showStampMark]);
 
   // Print Job Progress
   const [printingKey, setPrintingKey] = useState<string | null>(null);
@@ -225,6 +250,19 @@ export function PdfPreviewPrintTab({
 
   // Build deduplicated PDF pages grouped by category
   const { pagesByCategory, orderedCategories, totalUniquePages } = useMemo(() => {
+    const pageAllRowsMap = new Map<string, ProductRow[]>();
+    files.forEach((f, fileIdx) => {
+      for (const r of f.rows) {
+        const pk = `${fileIdx}::${r.pageNumber ?? 1}`;
+        let list = pageAllRowsMap.get(pk);
+        if (!list) {
+          list = [];
+          pageAllRowsMap.set(pk, list);
+        }
+        list.push(r);
+      }
+    });
+
     const map = new Map<string, PdfPageCardData>();
 
     files.forEach((f, fileIdx) => {
@@ -233,6 +271,8 @@ export function PdfPreviewPrintTab({
         const cat = r.category;
         const k = `${fileIdx}::${pageNum}::${cat}`;
         if (!map.has(k)) {
+          const allPageRows = pageAllRowsMap.get(`${fileIdx}::${pageNum}`) ?? [];
+          const rawMark = formatCategoryStampMark(allPageRows);
           map.set(k, {
             key: k,
             fileIdx,
@@ -242,6 +282,8 @@ export function PdfPreviewPrintTab({
             category: cat,
             items: [],
             totalQty: 0,
+            stampMark: rawMark,
+            activeStampMark: showStampMark && rawMark ? rawMark : null,
           });
         }
         const entry = map.get(k)!;
@@ -274,7 +316,7 @@ export function PdfPreviewPrintTab({
       orderedCategories: cats,
       totalUniquePages: map.size,
     };
-  }, [files]);
+  }, [files, showStampMark]);
 
   // Register Android Native Bluetooth Event Listeners
   useEffect(() => {
@@ -382,7 +424,7 @@ export function PdfPreviewPrintTab({
       return;
     }
     let cancelled = false;
-    renderPdfPageToDataUrl(zoomPage.file, zoomPage.pageNumber, 2.2)
+    renderPdfPageToDataUrl(zoomPage.file, zoomPage.pageNumber, 2.2, zoomPage.activeStampMark)
       .then((url) => {
         if (!cancelled) setZoomImageUrl(url);
       })
@@ -472,6 +514,7 @@ export function PdfPreviewPrintTab({
         page.file,
         page.pageNumber,
         printAreaDots.widthDots,
+        page.activeStampMark,
       );
       const bytes = encodeCanvasForPrinter(canvas, false);
       await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
@@ -511,6 +554,7 @@ export function PdfPreviewPrintTab({
         p.file,
         p.pageNumber,
         printAreaDots.widthDots,
+        p.activeStampMark,
       ).then((canvas) => encodeCanvasForPrinter(canvas, idx > 0));
       encodedCache.set(idx, prom);
       return prom;
@@ -585,7 +629,12 @@ export function PdfPreviewPrintTab({
 
   const handleSystemPrintPage = async (page: PdfPageCardData) => {
     try {
-      const canvas = await renderPdfPageToCanvas(page.file, page.pageNumber, 2.5);
+      const canvas = await renderPdfPageToCanvas(
+        page.file,
+        page.pageNumber,
+        2.5,
+        page.activeStampMark,
+      );
       const handledAndroid = triggerAndroidSystemPrint(
         canvas,
         `Resi_${page.category}_Hal_${page.pageNumber}`,
@@ -655,7 +704,26 @@ export function PdfPreviewPrintTab({
               {connectedPrinter ? "Ganti / Atur Printer" : "Cari Printer Bluetooth"}
             </Button>
 
-            {/* Toggle Gambar PDF vs Tabel Teks Mentah */}
+            {/* Toggle Tanda Kode Kategori di Area Kosong Resi (B1/H5/5) */}
+            <button
+              type="button"
+              onClick={() => setShowStampMark((v) => !v)}
+              title="Cetak tanda kategori & berat (contoh: B1, H5, 5) otomatis pada ruang kosong resi"
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                showStampMark
+                  ? "border-foreground/30 bg-foreground text-background shadow-2xs"
+                  : "border-border/80 bg-muted/40 text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  showStampMark ? "bg-emerald-400" : "bg-muted-foreground/50"
+                }`}
+              />
+              Tanda: B1/H5/5
+            </button>
+
+            {/* Toggle Gambar PDF vs Tabel Teks */}
             <div className="inline-flex rounded-lg border border-border/80 bg-muted/40 p-0.5">
               <button
                 type="button"
@@ -1288,12 +1356,13 @@ function PdfPageCard({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [imgUrl, setImgUrl] = useState<string | null>(
-    () => getCachedPreviewUrl(page.file, page.pageNumber),
+    () => getCachedPreviewUrl(page.file, page.pageNumber, page.activeStampMark),
   );
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    const cached = getCachedPreviewUrl(page.file, page.pageNumber);
+    setError(false);
+    const cached = getCachedPreviewUrl(page.file, page.pageNumber, page.activeStampMark);
     if (cached) {
       setImgUrl(cached);
       return;
@@ -1303,9 +1372,9 @@ function PdfPageCard({
     let observer: IntersectionObserver | null = null;
 
     const loadImage = () => {
-      renderPdfPageToDataUrl(page.file, page.pageNumber, 1.4)
+      renderPdfPageToDataUrl(page.file, page.pageNumber, 1.4, page.activeStampMark)
         .then((url) => {
-          setCachedPreviewUrl(page.file, page.pageNumber, url);
+          setCachedPreviewUrl(page.file, page.pageNumber, page.activeStampMark, url);
           if (!cancelled) setImgUrl(url);
         })
         .catch(() => {
@@ -1332,7 +1401,7 @@ function PdfPageCard({
       cancelled = true;
       observer?.disconnect();
     };
-  }, [page.file, page.fileIdx, page.fileName, page.pageNumber]);
+  }, [page.file, page.fileIdx, page.fileName, page.pageNumber, page.activeStampMark]);
 
   const sizeSummary = page.items.map((it) => `${it.size ?? "-"} ×${it.qty}`).join(" · ");
 
@@ -1345,6 +1414,18 @@ function PdfPageCard({
       <div className="flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border/60 bg-muted/20">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[11px] font-bold text-foreground shrink-0">Hal. {page.pageNumber}</span>
+          {page.stampMark && (
+            <span
+              className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border shrink-0 ${
+                page.activeStampMark
+                  ? "bg-foreground text-background border-foreground"
+                  : "bg-muted/60 text-muted-foreground border-border/70 line-through"
+              }`}
+              title={`Tanda cetak di resi: ${page.stampMark}`}
+            >
+              {page.stampMark}
+            </span>
+          )}
           <span className="text-[10px] font-semibold text-muted-foreground truncate bg-muted px-1.5 py-0.5 rounded">
             {sizeSummary}
           </span>

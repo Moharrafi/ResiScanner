@@ -15,6 +15,56 @@ export type ProductRow = {
   pageNumber?: number; // 1-indexed page number in source PDF
 };
 
+/**
+ * Formats a concise warehouse marker code for a PDF shipping label page:
+ * - Bitumax: "B" + weight (e.g. B1, B5, B20)
+ * - Hijau: "H" + weight (e.g. H1, H5, H20)
+ * - Hitam (Biasa): weight number only (e.g. 1, 5, 20)
+ * Appends "xN" if item qty > 1 (e.g. "B1 x2", "5 x2").
+ */
+export function formatCategoryStampMark(items: ProductRow[]): string {
+  if (!items || items.length === 0) return "";
+
+  const grouped = new Map<string, { category: ProductCategory; size: string | null; qty: number }>();
+  for (const it of items) {
+    const k = `${it.category}::${it.size ?? ""}`;
+    const existing = grouped.get(k);
+    if (existing) existing.qty += it.qty;
+    else grouped.set(k, { category: it.category, size: it.size, qty: it.qty });
+  }
+
+  const tokens: string[] = [];
+  for (const entry of grouped.values()) {
+    let weightCode = "";
+    if (entry.size) {
+      const cleaned = entry.size.trim().toUpperCase();
+      if (cleaned.endsWith("KG") || cleaned.endsWith("L")) {
+        weightCode = cleaned.replace(/(?:KG|L)$/i, "");
+      } else {
+        weightCode = cleaned;
+      }
+    }
+
+    let code = "";
+    if (entry.category === "bitumax") {
+      code = `B${weightCode}`;
+    } else if (entry.category === "hijau") {
+      code = `H${weightCode}`;
+    } else if (entry.category === "hitam") {
+      code = weightCode || "HTM";
+    } else {
+      code = weightCode || "?";
+    }
+
+    if (entry.qty > 1) {
+      code = `${code}x${entry.qty}`;
+    }
+    if (code) tokens.push(code);
+  }
+
+  return tokens.join(" + ");
+}
+
 export type GroupedProduct = {
   name: string;
   category?: ProductCategory;
