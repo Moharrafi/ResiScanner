@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import type { ProductCategory, ProductRow } from "@/lib/pdf-parser";
-import { renderPdfPageToCanvas, renderPdfPageToDataUrl } from "@/lib/pdf-renderer";
+import { renderPdfPageForThermal, renderPdfPageToCanvas, renderPdfPageToDataUrl } from "@/lib/pdf-renderer";
 import {
   type BluetoothPrinterDevice,
   type PrintQualitySpeed,
@@ -466,8 +466,11 @@ export function PdfPreviewPrintTab({
 
     setPrintingKey(page.key);
     try {
-      // Render at high scale (2.5x) for crisp barcodes & small text on thermal paper
-      const canvas = await renderPdfPageToCanvas(page.file, page.pageNumber, 2.5);
+      const canvas = await renderPdfPageForThermal(
+        page.file,
+        page.pageNumber,
+        printAreaDots.widthDots,
+      );
       const bytes = encodeCanvasForPrinter(canvas);
       await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
       toast.success(`Berhasil mencetak Hal. ${page.pageNumber} (${CATEGORY_META[page.category].label})`);
@@ -495,25 +498,36 @@ export function PdfPreviewPrintTab({
       total: pages.length,
     });
 
+    const encodePage = async (p: PdfPageCardData): Promise<Uint8Array> => {
+      const canvas = await renderPdfPageForThermal(
+        p.file,
+        p.pageNumber,
+        printAreaDots.widthDots,
+      );
+      return encodeCanvasForPrinter(canvas);
+    };
+
     let printed = 0;
     try {
+      // Lookahead pipeline: pre-render & pre-encode the next page while the current page streams over Bluetooth
+      let nextEncodedPromise: Promise<Uint8Array> | null = encodePage(pages[0]);
+
       for (let i = 0; i < pages.length; i++) {
         if (cancelBatchRef.current) {
           toast.info(`Cetak dibatalkan (${printed}/${pages.length} resi tercetak).`);
           break;
         }
-        const p = pages[i];
         setBatchProgress({
           label: CATEGORY_META[cat].label,
           current: i + 1,
           total: pages.length,
         });
-        const canvas = await renderPdfPageToCanvas(p.file, p.pageNumber, 2.5);
-        const bytes = encodeCanvasForPrinter(canvas);
+
+        const bytes = await nextEncodedPromise!;
+        nextEncodedPromise = i + 1 < pages.length ? encodePage(pages[i + 1]) : null;
+
         await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
         printed++;
-        // Brief pause between labels so printer finishes feeding cleanly
-        await new Promise((r) => setTimeout(r, 120));
       }
       if (!cancelBatchRef.current) {
         toast.success(`Selesai mencetak ${printed} resi ${CATEGORY_META[cat].label}!`);

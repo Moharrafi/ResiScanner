@@ -92,8 +92,8 @@ function prepareThermalCanvas(
       let maxX = -1;
       let maxY = -1;
 
-      for (let y = 0; y < sh; y += 2) {
-        for (let x = 0; x < sw; x += 2) {
+      for (let y = 0; y < sh; y += 4) {
+        for (let x = 0; x < sw; x += 4) {
           const i = (y * sw + x) * 4;
           const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
           if (lum < 245 && data[i + 3] > 20) {
@@ -106,7 +106,7 @@ function prepareThermalCanvas(
       }
 
       if (maxX > minX && maxY > minY) {
-        const pad = 10;
+        const pad = 12;
         sx = Math.max(0, minX - pad);
         sy = Math.max(0, minY - pad);
         sw = Math.min(sourceCanvas.width - sx, maxX - sx + pad * 2);
@@ -141,7 +141,7 @@ function prepareThermalCanvas(
 
 /**
  * Encodes an HTMLCanvasElement into ESC/POS raster graphics (GS v 0) bytes.
- * Sends as a continuous block (zero inter-strip motor pauses) and supports fast mode (m=3).
+ * Skips tall empty white gaps via fast ESC J feeds and streams continuous ink bands.
  */
 export function encodeCanvasToEscPos(
   sourceCanvas: HTMLCanvasElement,
@@ -164,46 +164,94 @@ export function encodeCanvasToEscPos(
   const xL = bytesPerRow & 0xff;
   const xH = (bytesPerRow >> 8) & 0xff;
 
+  // Pack all pixel rows once and track which rows contain any black dot
+  const fullRaster = new Uint8Array(bytesPerRow * height);
+  const rowHasInk = new Uint8Array(height);
+
+  for (let y = 0; y < height; y++) {
+    let anyInk = 0;
+    const rowBase = y * bytesPerRow;
+    const pxRowBase = y * width;
+    for (let bx = 0; bx < bytesPerRow; bx++) {
+      let byte = 0;
+      const xBase = bx * 8;
+      for (let bit = 0; bit < 8; bit++) {
+        const x = xBase + bit;
+        if (x < width) {
+          const idx = (pxRowBase + x) * 4;
+          const lum = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
+          if (lum < threshold) {
+            byte |= 1 << (7 - bit);
+          }
+        }
+      }
+      if (byte !== 0) anyInk = 1;
+      fullRaster[rowBase + bx] = byte;
+    }
+    rowHasInk[y] = anyInk;
+  }
+
   const chunks: Uint8Array[] = [];
   // ESC @ (Init)
   chunks.push(new Uint8Array([0x1b, 0x40]));
 
   const rasterMode = isFast ? 0x03 : 0x00;
-  // Use large stripHeight so standard labels print in 1 single GS v 0 command (no stepper pause)
-  const stripHeight = 2048;
+  const dotMultiplier = isFast ? 2 : 1;
+  const minBlankRunToSkip = 24; // Skip blank gaps >= 24px via 3-byte ESC J feed
 
-  for (let startY = 0; startY < height; startY += stripHeight) {
-    const h = Math.min(stripHeight, height - startY);
-    const yL = h & 0xff;
-    const yH = (h >> 8) & 0xff;
+  let y = 0;
+  while (y < height) {
+    // Count consecutive blank rows starting at y
+    let blankRun = 0;
+    while (y + blankRun < height && rowHasInk[y + blankRun] === 0) {
+      blankRun++;
+    }
 
-    const header = new Uint8Array([0x1d, 0x76, 0x30, rasterMode, xL, xH, yL, yH]);
-    const raster = new Uint8Array(bytesPerRow * h);
+    if (blankRun >= minBlankRunToSkip) {
+      let feedDots = blankRun * dotMultiplier;
+      while (feedDots > 0) {
+        const step = Math.min(255, feedDots);
+        chunks.push(new Uint8Array([0x1b, 0x4a, step]));
+        feedDots -= step;
+      }
+      y += blankRun;
+      continue;
+    }
 
-    for (let y = 0; y < h; y++) {
-      const srcY = startY + y;
-      for (let bx = 0; bx < bytesPerRow; bx++) {
-        let byte = 0;
-        for (let bit = 0; bit < 8; bit++) {
-          const x = bx * 8 + bit;
-          if (x < width) {
-            const idx = (srcY * width + x) * 4;
-            const lum = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
-            if (lum < threshold) {
-              byte |= 1 << (7 - bit);
-            }
-          }
+    // Collect continuous ink band until either end or a long blank gap >= minBlankRunToSkip
+    const bandStart = y;
+    let bandEnd = y;
+    while (bandEnd < height) {
+      if (rowHasInk[bandEnd] === 1) {
+        bandEnd++;
+      } else {
+        let gap = 0;
+        while (bandEnd + gap < height && rowHasInk[bandEnd + gap] === 0) {
+          gap++;
         }
-        raster[y * bytesPerRow + bx] = byte;
+        if (gap >= minBlankRunToSkip || bandEnd + gap >= height) {
+          break;
+        }
+        bandEnd += gap;
       }
     }
 
-    chunks.push(header);
-    chunks.push(raster);
+    // Emit band in up to 2048-row GS v 0 blocks
+    let segStart = bandStart;
+    while (segStart < bandEnd) {
+      const h = Math.min(2048, bandEnd - segStart);
+      const yL = h & 0xff;
+      const yH = (h >> 8) & 0xff;
+      chunks.push(new Uint8Array([0x1d, 0x76, 0x30, rasterMode, xL, xH, yL, yH]));
+      chunks.push(fullRaster.subarray(segStart * bytesPerRow, (segStart + h) * bytesPerRow));
+      segStart += h;
+    }
+
+    y = bandEnd;
   }
 
-  // Feed 3 lines + partial cut
-  chunks.push(new Uint8Array([0x1b, 0x64, 0x03, 0x1d, 0x56, 0x42, 0x00]));
+  // Crisp small paper feed (3mm) at end of label without cutter stall
+  chunks.push(new Uint8Array([0x1b, 0x4a, 0x18]));
   return concatUint8Arrays(chunks);
 }
 
@@ -598,13 +646,17 @@ async function ensureBleReady(preferredPrinterId?: string): Promise<BleGlobalSta
 
 async function writeBleBytesWithRecovery(state: BleGlobalState, bytes: Uint8Array): Promise<void> {
   let mtu = state.safeMtu || 64;
+  let delayMs = (state as any).bleDelayMs ?? 4;
   let offset = 0;
+  let chunksSentSinceYield = 0;
 
   while (offset < bytes.length) {
-    // If GATT dropped mid-stream, auto-reconnect cleanly & step down to universal 20-byte MTU
+    // If GATT dropped mid-stream, auto-reconnect cleanly & step down to universal 20-byte MTU + safer pacing
     if (!state.device?.gatt?.connected || !state.characteristic) {
       mtu = 20;
+      delayMs = 10;
       state.safeMtu = 20;
+      (state as any).bleDelayMs = 10;
       const server = await state.device.gatt.connect();
       const ch = await findWritableBleCharacteristic(server);
       if (!ch) throw new Error("Koneksi BLE terputus di tengah cetak.");
@@ -617,17 +669,22 @@ async function writeBleBytesWithRecovery(state: BleGlobalState, bytes: Uint8Arra
     try {
       if (ch.properties?.writeWithoutResponse) {
         await ch.writeValueWithoutResponse(chunk);
-        // Safe pacing for RPP02N BLE UART FIFO buffer
-        await new Promise((r) => setTimeout(r, 10));
+        chunksSentSinceYield++;
+        if (chunksSentSinceYield >= 2) {
+          chunksSentSinceYield = 0;
+          await new Promise((r) => setTimeout(r, delayMs));
+        }
       } else {
         await ch.writeValueWithResponse(chunk);
       }
       offset += chunk.length;
     } catch (err) {
-      if (mtu > 20) {
-        // Shrink MTU to guaranteed 20-byte BLE ATT limit and retry same offset
+      if (mtu > 20 || delayMs < 10) {
+        // Shrink MTU to guaranteed 20-byte BLE ATT limit with safer delay and retry same offset
         mtu = 20;
+        delayMs = 10;
         state.safeMtu = 20;
+        (state as any).bleDelayMs = 10;
         await new Promise((r) => setTimeout(r, 30));
       } else {
         throw err;

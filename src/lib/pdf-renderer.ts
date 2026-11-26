@@ -56,6 +56,39 @@ export async function renderPdfPageToCanvas(
 }
 
 /**
+ * Renders a PDF page sized cleanly for a target thermal dot width (e.g. 384/576/800 dots).
+ * Avoids over-rendering huge A4 RGBA canvases while keeping barcodes crisp.
+ */
+export async function renderPdfPageForThermal(
+  file: File,
+  pageNumber: number,
+  targetWidthDots: number,
+): Promise<HTMLCanvasElement> {
+  const pdf = await getPdfDocument(file);
+  const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
+  const page = await pdf.getPage(safePage);
+
+  const baseViewport = page.getViewport({ scale: 1 });
+  // Render slightly above target dots (1.25x) for crisp downsampling without 3M-pixel bloat
+  const idealScale = (Math.max(384, targetWidthDots) * 1.25) / Math.max(1, baseViewport.width);
+  const scale = Math.max(1.1, Math.min(2.4, idealScale));
+  const viewport = page.getViewport({ scale });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas;
+}
+
+/**
  * Renders a single PDF page to a PNG data URL.
  */
 export async function renderPdfPageToDataUrl(
