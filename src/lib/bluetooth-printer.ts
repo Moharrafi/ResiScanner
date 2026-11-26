@@ -12,6 +12,7 @@ export type PrintPaperOptions = {
   paperHeightMm: number;
   threshold?: number;
   speedMode?: PrintQualitySpeed;
+  skipInit?: boolean;
 };
 
 export type BluetoothPrinterDevice = {
@@ -192,12 +193,14 @@ export function encodeCanvasToEscPos(
   }
 
   const chunks: Uint8Array[] = [];
-  // ESC @ (Init)
-  chunks.push(new Uint8Array([0x1b, 0x40]));
+  // Only send ESC @ hardware reset on the first sheet so multi-page prints never stall resetting between sheets
+  if (!opts.skipInit) {
+    chunks.push(new Uint8Array([0x1b, 0x40]));
+  }
 
   const rasterMode = isFast ? 0x03 : 0x00;
   const dotMultiplier = isFast ? 2 : 1;
-  const minBlankRunToSkip = 24; // Skip blank gaps >= 24px via 3-byte ESC J feed
+  const minBlankRunToSkip = 12; // Skip blank gaps >= 12px via 3-byte ESC J feed
 
   let y = 0;
   while (y < height) {
@@ -646,17 +649,17 @@ async function ensureBleReady(preferredPrinterId?: string): Promise<BleGlobalSta
 
 async function writeBleBytesWithRecovery(state: BleGlobalState, bytes: Uint8Array): Promise<void> {
   let mtu = state.safeMtu || 64;
-  let delayMs = (state as any).bleDelayMs ?? 4;
+  let yieldEveryBytes = (state as any).bleYieldEveryBytes ?? 384;
   let offset = 0;
-  let chunksSentSinceYield = 0;
+  let bytesSinceYield = 0;
 
   while (offset < bytes.length) {
-    // If GATT dropped mid-stream, auto-reconnect cleanly & step down to universal 20-byte MTU + safer pacing
+    // If GATT dropped mid-stream, auto-reconnect cleanly & step down to universal 20-byte MTU + conservative pacing
     if (!state.device?.gatt?.connected || !state.characteristic) {
       mtu = 20;
-      delayMs = 10;
+      yieldEveryBytes = 80;
       state.safeMtu = 20;
-      (state as any).bleDelayMs = 10;
+      (state as any).bleYieldEveryBytes = 80;
       const server = await state.device.gatt.connect();
       const ch = await findWritableBleCharacteristic(server);
       if (!ch) throw new Error("Koneksi BLE terputus di tengah cetak.");
@@ -669,22 +672,22 @@ async function writeBleBytesWithRecovery(state: BleGlobalState, bytes: Uint8Arra
     try {
       if (ch.properties?.writeWithoutResponse) {
         await ch.writeValueWithoutResponse(chunk);
-        chunksSentSinceYield++;
-        if (chunksSentSinceYield >= 2) {
-          chunksSentSinceYield = 0;
-          await new Promise((r) => setTimeout(r, delayMs));
+        bytesSinceYield += chunk.length;
+        if (bytesSinceYield >= yieldEveryBytes) {
+          bytesSinceYield = 0;
+          await new Promise((r) => setTimeout(r, 4));
         }
       } else {
         await ch.writeValueWithResponse(chunk);
       }
       offset += chunk.length;
     } catch (err) {
-      if (mtu > 20 || delayMs < 10) {
-        // Shrink MTU to guaranteed 20-byte BLE ATT limit with safer delay and retry same offset
+      if (mtu > 20 || yieldEveryBytes > 80) {
+        // Shrink MTU to guaranteed 20-byte BLE ATT limit with safer pacing and retry same offset
         mtu = 20;
-        delayMs = 10;
+        yieldEveryBytes = 80;
         state.safeMtu = 20;
-        (state as any).bleDelayMs = 10;
+        (state as any).bleYieldEveryBytes = 80;
         await new Promise((r) => setTimeout(r, 30));
       } else {
         throw err;
@@ -761,6 +764,120 @@ export async function sendBytesToConnectedPrinter(
 
   getBleState().onDisconnectedCallback?.();
   throw new Error("Koneksi printer Bluetooth terputus. Silakan klik Hubungkan ulang.");
+}
+
+/**
+ * Streams a multi-page batch continuously without resetting or breaking BLE sessions between sheets.
+ */
+export async function streamBatchToConnectedPrinter(params: {
+  totalPages: number;
+  getPageBytes: (pageIndex: number) => Promise<Uint8Array>;
+  onPageStart?: (pageIndex: number) => void;
+  onPageDone?: (pageIndex: number) => void;
+  shouldCancel?: () => boolean;
+  preferredPrinterId?: string;
+}): Promise<number> {
+  const { totalPages, getPageBytes, onPageStart, onPageDone, shouldCancel, preferredPrinterId } = params;
+  const bridge = getAndroidBridge();
+
+  // Android Native SPP path: stream continuously page-by-page without extra JS sleeps
+  if (bridge && (bridge.isAvailable ? bridge.isAvailable() : true)) {
+    let printed = 0;
+    for (let i = 0; i < totalPages; i++) {
+      if (shouldCancel?.()) break;
+      onPageStart?.(i);
+      const bytes = await getPageBytes(i);
+      await sendBytesToConnectedPrinter(bytes, preferredPrinterId);
+      printed++;
+      onPageDone?.(i);
+    }
+    return printed;
+  }
+
+  // Web Bluetooth BLE continuous streaming path: keep one open session and pack page boundaries seamlessly
+  const bleState = await ensureBleReady(preferredPrinterId);
+  if (!bleState?.characteristic || !bleState.device?.gatt?.connected) {
+    getBleState().onDisconnectedCallback?.();
+    throw new Error("Koneksi printer Bluetooth terputus. Silakan klik Hubungkan ulang.");
+  }
+
+  let mtu = bleState.safeMtu || 64;
+  let yieldEveryBytes = (bleState as any).bleYieldEveryBytes ?? 384;
+  let bytesSinceYield = 0;
+  let carryTail: Uint8Array | null = null;
+  let printed = 0;
+
+  for (let i = 0; i < totalPages; i++) {
+    if (shouldCancel?.()) break;
+    onPageStart?.(i);
+
+    const pageBytes = await getPageBytes(i);
+    // Combine any tiny leftover tail from the end of the previous sheet with the start of this sheet
+    let activeBuf: Uint8Array;
+    if (carryTail && carryTail.length > 0) {
+      activeBuf = concatUint8Arrays([carryTail, pageBytes]);
+      carryTail = null;
+    } else {
+      activeBuf = pageBytes;
+    }
+
+    let offset = 0;
+    while (offset < activeBuf.length) {
+      if (shouldCancel?.()) break;
+
+      // If more pages follow and less than 1 full MTU remains at page boundary, carry tail into next sheet cleanly
+      const remaining = activeBuf.length - offset;
+      if (remaining < mtu && i + 1 < totalPages) {
+        carryTail = activeBuf.slice(offset);
+        break;
+      }
+
+      if (!bleState.device?.gatt?.connected || !bleState.characteristic) {
+        mtu = 20;
+        yieldEveryBytes = 80;
+        bleState.safeMtu = 20;
+        (bleState as any).bleYieldEveryBytes = 80;
+        const server = await bleState.device.gatt.connect();
+        const ch = await findWritableBleCharacteristic(server);
+        if (!ch) throw new Error("Koneksi BLE terputus di tengah cetak.");
+        bleState.characteristic = ch;
+      }
+
+      const ch = bleState.characteristic;
+      const chunk = activeBuf.slice(offset, offset + mtu);
+
+      try {
+        if (ch.properties?.writeWithoutResponse) {
+          await ch.writeValueWithoutResponse(chunk);
+          bytesSinceYield += chunk.length;
+          if (bytesSinceYield >= yieldEveryBytes) {
+            bytesSinceYield = 0;
+            await new Promise((r) => setTimeout(r, 4));
+          }
+        } else {
+          await ch.writeValueWithResponse(chunk);
+        }
+        offset += chunk.length;
+      } catch (err) {
+        if (mtu > 20 || yieldEveryBytes > 80) {
+          mtu = 20;
+          yieldEveryBytes = 80;
+          bleState.safeMtu = 20;
+          (bleState as any).bleYieldEveryBytes = 80;
+          await new Promise((r) => setTimeout(r, 30));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!shouldCancel?.()) {
+      printed++;
+      onPageDone?.(i);
+    }
+  }
+
+  return printed;
 }
 
 export function triggerAndroidSystemPrint(canvas: HTMLCanvasElement, title: string): boolean {

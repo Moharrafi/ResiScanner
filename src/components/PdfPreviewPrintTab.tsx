@@ -48,6 +48,7 @@ import {
   setWebBluetoothDisconnectListener,
   startAndroidBluetoothScan,
   stopAndroidBluetoothScan,
+  streamBatchToConnectedPrinter,
   triggerAndroidSystemPrint,
 } from "@/lib/bluetooth-printer";
 
@@ -443,12 +444,13 @@ export function PdfPreviewPrintTab({
   };
 
   const encodeCanvasForPrinter = useCallback(
-    (canvas: HTMLCanvasElement) => {
+    (canvas: HTMLCanvasElement, skipInit = false) => {
       const opts = {
         paperWidthMm,
         paperHeightMm,
         threshold,
         speedMode,
+        skipInit,
       };
       return protocol === "tspl"
         ? encodeCanvasToTspl(canvas, opts)
@@ -471,7 +473,7 @@ export function PdfPreviewPrintTab({
         page.pageNumber,
         printAreaDots.widthDots,
       );
-      const bytes = encodeCanvasForPrinter(canvas);
+      const bytes = encodeCanvasForPrinter(canvas, false);
       await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
       toast.success(`Berhasil mencetak Hal. ${page.pageNumber} (${CATEGORY_META[page.category].label})`);
     } catch (err: any) {
@@ -498,43 +500,65 @@ export function PdfPreviewPrintTab({
       total: pages.length,
     });
 
-    const encodePage = async (p: PdfPageCardData): Promise<Uint8Array> => {
-      const canvas = await renderPdfPageForThermal(
+    // Keep up to 3 upcoming sheets pre-rendered and pre-encoded ahead of Bluetooth I/O
+    const LOOKAHEAD = 3;
+    const encodedCache = new Map<number, Promise<Uint8Array>>();
+
+    const scheduleEncode = (idx: number): Promise<Uint8Array> => {
+      if (encodedCache.has(idx)) return encodedCache.get(idx)!;
+      const p = pages[idx];
+      const prom = renderPdfPageForThermal(
         p.file,
         p.pageNumber,
         printAreaDots.widthDots,
-      );
-      return encodeCanvasForPrinter(canvas);
+      ).then((canvas) => encodeCanvasForPrinter(canvas, idx > 0));
+      encodedCache.set(idx, prom);
+      return prom;
     };
+
+    // Prime initial lookahead window
+    for (let k = 0; k < Math.min(LOOKAHEAD, pages.length); k++) {
+      scheduleEncode(k);
+    }
 
     let printed = 0;
     try {
-      // Lookahead pipeline: pre-render & pre-encode the next page while the current page streams over Bluetooth
-      let nextEncodedPromise: Promise<Uint8Array> | null = encodePage(pages[0]);
+      await streamBatchToConnectedPrinter({
+        totalPages: pages.length,
+        preferredPrinterId: connectedPrinter.address,
+        shouldCancel: () => cancelBatchRef.current,
+        onPageStart: (idx) => {
+          setBatchProgress({
+            label: CATEGORY_META[cat].label,
+            current: idx + 1,
+            total: pages.length,
+          });
+          // Queue next pages ahead while current page streams continuously
+          for (let k = 1; k <= LOOKAHEAD; k++) {
+            if (idx + k < pages.length) {
+              scheduleEncode(idx + k);
+            }
+          }
+        },
+        getPageBytes: async (idx) => {
+          const data = await scheduleEncode(idx);
+          encodedCache.delete(idx);
+          return data;
+        },
+        onPageDone: () => {
+          printed++;
+        },
+      });
 
-      for (let i = 0; i < pages.length; i++) {
-        if (cancelBatchRef.current) {
-          toast.info(`Cetak dibatalkan (${printed}/${pages.length} resi tercetak).`);
-          break;
-        }
-        setBatchProgress({
-          label: CATEGORY_META[cat].label,
-          current: i + 1,
-          total: pages.length,
-        });
-
-        const bytes = await nextEncodedPromise!;
-        nextEncodedPromise = i + 1 < pages.length ? encodePage(pages[i + 1]) : null;
-
-        await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
-        printed++;
-      }
-      if (!cancelBatchRef.current) {
+      if (cancelBatchRef.current) {
+        toast.info(`Cetak dibatalkan (${printed}/${pages.length} resi tercetak).`);
+      } else {
         toast.success(`Selesai mencetak ${printed} resi ${CATEGORY_META[cat].label}!`);
       }
     } catch (err: any) {
       toast.error(`Berhenti di resi ke-${printed + 1}: ${err?.message || "Error printer"}`);
     } finally {
+      encodedCache.clear();
       setBatchProgress(null);
     }
   };
