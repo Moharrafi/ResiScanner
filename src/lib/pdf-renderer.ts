@@ -117,17 +117,17 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
     return sum > 0;
   };
 
-  // 3. Measure stamp box dimensions (keep compact enough to fit inside COD row & product blank boxes)
+  // 3. Measure stamp box dimensions (bold, high-legibility lettering with compact padding)
   const computeStampMetrics = (scaleFactor: number) => {
-    const baseSize = Math.round(inkW * 0.056 * scaleFactor);
+    const baseSize = Math.round(inkW * 0.078 * scaleFactor);
     const lengthAdj = text.length > 3 ? Math.max(0.68, 3.2 / text.length) : 1;
-    const fontSize = Math.max(16, Math.round(baseSize * lengthAdj));
+    const fontSize = Math.max(20, Math.round(baseSize * lengthAdj));
     ctx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
     const measuredW = Math.ceil(ctx.measureText(text).width);
-    const padX = Math.max(8, Math.round(fontSize * 0.42));
-    const padY = Math.max(4, Math.round(fontSize * 0.24));
-    const boxW = Math.max(measuredW + padX * 2, Math.round(fontSize * 1.45));
-    const boxH = Math.round(fontSize * 1.08 + padY * 2);
+    const padX = Math.max(10, Math.round(fontSize * 0.36));
+    const padY = Math.max(4, Math.round(fontSize * 0.16));
+    const boxW = Math.max(measuredW + padX * 2, Math.round(fontSize * 1.42));
+    const boxH = Math.round(fontSize * 1.02 + padY * 2);
     return { fontSize, boxW, boxH };
   };
 
@@ -149,20 +149,23 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
   let placedY: number | null = null;
   let chosen = computeStampMetrics(1);
 
-  outerSearch: for (const scaleTry of [1.0, 0.84]) {
-    const m = computeStampMetrics(scaleTry);
-    const clearance = Math.max(4, Math.round(inkW * 0.008));
-    const checkW = m.boxW + clearance * 2;
-    const checkH = m.boxH + clearance * 2;
+  // Try each priority zone from largest scale down so top zones (e.g. next to COD) aren't skipped
+  const scaleSteps = [1.0, 0.9, 0.82, 0.74];
+  const clearance = Math.max(2, Math.round(inkW * 0.004));
 
-    for (const z of zones) {
+  outerSearch: for (const z of zones) {
+    for (const scaleTry of scaleSteps) {
+      const m = computeStampMetrics(scaleTry);
+      const checkW = m.boxW + clearance * 2;
+      const checkH = m.boxH + clearance * 2;
+
       const rxStart = Math.round(inkMinX + inkW * z.x0);
       const rxEnd = Math.round(inkMinX + inkW * z.x1) - checkW;
       const ryStart = Math.round(inkMinY + inkH * z.y0);
       const ryEnd = Math.round(inkMinY + inkH * z.y1) - checkH;
       if (rxEnd < rxStart || ryEnd < ryStart) continue;
 
-      const step = Math.max(6, Math.round(cell * 2));
+      const step = Math.max(4, Math.round(cell * 1.5));
       // Center scan horizontally in zone & sweep vertically so stamp looks neatly placed
       const centerX = Math.round((rxStart + rxEnd) / 2);
       const xCandidates: number[] = [centerX];
@@ -192,8 +195,8 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
   }
 
   // 4. Draw crisp white-backed high-contrast rounded marker stamp
-  const radius = Math.max(5, Math.round(chosen.boxH * 0.16));
-  const strokeW = Math.max(2, Math.round(chosen.fontSize * 0.08));
+  const radius = Math.max(6, Math.round(chosen.boxH * 0.16));
+  const strokeW = Math.max(2, Math.round(chosen.fontSize * 0.075));
 
   ctx.save();
   ctx.fillStyle = "#ffffff";
