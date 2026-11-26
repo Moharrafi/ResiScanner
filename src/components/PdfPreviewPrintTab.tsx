@@ -38,12 +38,14 @@ import {
   encodeCanvasToEscPos,
   encodeCanvasToTspl,
   encodeFastTestPrint,
+  getActiveWebBluetoothPrinter,
   getPairedAndroidPrinters,
   getPrintableAreaDots,
   isAndroidNativeBluetoothAvailable,
   isWebBluetoothAvailable,
   requestAndConnectWebBluetoothPrinter,
   sendBytesToConnectedPrinter,
+  setWebBluetoothDisconnectListener,
   startAndroidBluetoothScan,
   stopAndroidBluetoothScan,
   triggerAndroidSystemPrint,
@@ -342,7 +344,7 @@ export function PdfPreviewPrintTab({
       }
     };
 
-    // Sync initial paired/connected state if already connected in Activity
+    // Sync initial connected printer state (Android native or active Web Bluetooth BLE)
     const bridge = win.AndroidBluetoothBridge;
     if (bridge?.isConnected?.()) {
       const addr = bridge.getConnectedAddress?.() || "";
@@ -356,7 +358,20 @@ export function PdfPreviewPrintTab({
           source: "android",
         });
       }
+    } else {
+      const activeBle = getActiveWebBluetoothPrinter();
+      if (activeBle) {
+        setConnectedPrinter(activeBle);
+      }
     }
+
+    setWebBluetoothDisconnectListener(() => {
+      setConnectedPrinter(null);
+    });
+
+    return () => {
+      setWebBluetoothDisconnectListener(null);
+    };
   }, []);
 
   // Load high-res zoom preview when zoomPage opens
@@ -454,7 +469,7 @@ export function PdfPreviewPrintTab({
       // Render at high scale (2.5x) for crisp barcodes & small text on thermal paper
       const canvas = await renderPdfPageToCanvas(page.file, page.pageNumber, 2.5);
       const bytes = encodeCanvasForPrinter(canvas);
-      await sendBytesToConnectedPrinter(bytes);
+      await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
       toast.success(`Berhasil mencetak Hal. ${page.pageNumber} (${CATEGORY_META[page.category].label})`);
     } catch (err: any) {
       toast.error(err?.message || "Gagal mencetak resi ke printer Bluetooth.");
@@ -495,7 +510,7 @@ export function PdfPreviewPrintTab({
         });
         const canvas = await renderPdfPageToCanvas(p.file, p.pageNumber, 2.5);
         const bytes = encodeCanvasForPrinter(canvas);
-        await sendBytesToConnectedPrinter(bytes);
+        await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
         printed++;
         // Brief pause between labels so printer finishes feeding cleanly
         await new Promise((r) => setTimeout(r, 120));
@@ -523,7 +538,7 @@ export function PdfPreviewPrintTab({
         paperWidthMm,
         paperHeightMm,
       );
-      await sendBytesToConnectedPrinter(bytes);
+      await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
       toast.success("Test print cepat berhasil dikirim!");
     } catch (err: any) {
       toast.error(err?.message || "Test print gagal.");

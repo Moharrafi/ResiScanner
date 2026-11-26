@@ -369,11 +369,94 @@ const BLE_PRINTER_SERVICES = [
   "49535343-fe7d-4ae5-8fa9-9fafd205e455",
   "0000ff00-0000-1000-8000-00805f9b34fb",
   "0000ffe0-0000-1000-8000-00805f9b34fb",
+  "0000ae30-0000-1000-8000-00805f9b34fb",
+  "0000ae00-0000-1000-8000-00805f9b34fb",
+  "0000af30-0000-1000-8000-00805f9b34fb",
+  "0000fff0-0000-1000-8000-00805f9b34fb",
+  "0000fee7-0000-1000-8000-00805f9b34fb",
   "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f",
 ];
 
-let activeBleDevice: any = null;
-let activeBleCharacteristic: any = null;
+// Known print-data characteristic UUID prefixes (prioritized over config/meta chars)
+const PREFERRED_PRINT_CHAR_PREFIXES = [
+  "00002af1",
+  "bef8d6c9",
+  "49535343-8841",
+  "0000ffe1",
+  "0000ff02",
+  "0000ae01",
+  "0000af01",
+  "0000fff2",
+];
+
+type BleGlobalState = {
+  device: any | null;
+  characteristic: any | null;
+  printerInfo: BluetoothPrinterDevice | null;
+  safeMtu: number;
+  reconnecting: boolean;
+  onDisconnectedCallback?: (() => void) | null;
+};
+
+function getBleState(): BleGlobalState {
+  if (typeof window === "undefined") {
+    return { device: null, characteristic: null, printerInfo: null, safeMtu: 64, reconnecting: false };
+  }
+  const win = window as any;
+  if (!win.__resiBleState) {
+    win.__resiBleState = {
+      device: null,
+      characteristic: null,
+      printerInfo: null,
+      safeMtu: 64,
+      reconnecting: false,
+      onDisconnectedCallback: null,
+    } satisfies BleGlobalState;
+  }
+  return win.__resiBleState as BleGlobalState;
+}
+
+export function setWebBluetoothDisconnectListener(cb: (() => void) | null): void {
+  const state = getBleState();
+  state.onDisconnectedCallback = cb;
+}
+
+export function getActiveWebBluetoothPrinter(): BluetoothPrinterDevice | null {
+  const state = getBleState();
+  if (state.device && state.printerInfo) {
+    return state.printerInfo;
+  }
+  return null;
+}
+
+async function findWritableBleCharacteristic(server: any): Promise<any | null> {
+  const services = await server.getPrimaryServices();
+  const candidates: any[] = [];
+
+  for (const svc of services) {
+    try {
+      const chars = await svc.getCharacteristics();
+      for (const ch of chars) {
+        if (ch.properties?.writeWithoutResponse || ch.properties?.write) {
+          candidates.push(ch);
+        }
+      }
+    } catch {
+      // Ignore inaccessible GATT services
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  // 1. Prioritize known thermal printer data characteristic UUIDs
+  for (const prefix of PREFERRED_PRINT_CHAR_PREFIXES) {
+    const match = candidates.find((c) => String(c.uuid || "").toLowerCase().startsWith(prefix));
+    if (match) return match;
+  }
+
+  // 2. Otherwise prefer writeWithoutResponse for smoother streaming, else write
+  return candidates.find((c) => c.properties?.writeWithoutResponse) ?? candidates[0];
+}
 
 export function getPairedAndroidPrinters(): BluetoothPrinterDevice[] {
   const bridge = getAndroidBridge();
@@ -414,11 +497,15 @@ export function disconnectBluetoothPrinter(): void {
   if (bridge?.disconnect) {
     bridge.disconnect();
   }
-  if (activeBleDevice?.gatt?.connected) {
-    activeBleDevice.gatt.disconnect();
+  const state = getBleState();
+  if (state.device?.gatt?.connected) {
+    try {
+      state.device.gatt.disconnect();
+    } catch {}
   }
-  activeBleDevice = null;
-  activeBleCharacteristic = null;
+  state.device = null;
+  state.characteristic = null;
+  state.printerInfo = null;
 }
 
 export async function requestAndConnectWebBluetoothPrinter(): Promise<BluetoothPrinterDevice> {
@@ -433,88 +520,190 @@ export async function requestAndConnectWebBluetoothPrinter(): Promise<BluetoothP
   });
 
   const server = await device.gatt.connect();
-  const services = await server.getPrimaryServices();
-
-  let writableChar: any = null;
-  for (const svc of services) {
-    const chars = await svc.getCharacteristics();
-    for (const ch of chars) {
-      if (ch.properties.writeWithoutResponse || ch.properties.write) {
-        writableChar = ch;
-        break;
-      }
-    }
-    if (writableChar) break;
-  }
+  const writableChar = await findWritableBleCharacteristic(server);
 
   if (!writableChar) {
-    device.gatt.disconnect();
+    try {
+      device.gatt.disconnect();
+    } catch {}
     throw new Error("Perangkat Bluetooth tidak memiliki service tulis printer (BLE GATT).");
   }
 
-  activeBleDevice = device;
-  activeBleCharacteristic = writableChar;
+  const state = getBleState();
+  // Clean up previous device listener if switching printers
+  if (state.device && state.device !== device && state.device.__resiDisconnectHandler) {
+    try {
+      state.device.removeEventListener("gattserverdisconnected", state.device.__resiDisconnectHandler);
+    } catch {}
+  }
 
-  return {
+  const info: BluetoothPrinterDevice = {
     id: device.id,
     name: device.name || "BLE Printer",
     address: device.id,
     source: "web",
   };
+
+  const onGattDisconnected = () => {
+    // Keep device/printerInfo in state so print can auto-reconnect if printer merely idled out,
+    // only clear characteristic handle so ensureBleReady re-discovers it on reconnect.
+    state.characteristic = null;
+  };
+  if (!device.__resiDisconnectHandler) {
+    device.__resiDisconnectHandler = onGattDisconnected;
+    device.addEventListener("gattserverdisconnected", onGattDisconnected);
+  }
+
+  state.device = device;
+  state.characteristic = writableChar;
+  state.printerInfo = info;
+  state.safeMtu = 64;
+
+  return info;
 }
 
-export async function sendBytesToConnectedPrinter(bytes: Uint8Array): Promise<void> {
-  const bridge = getAndroidBridge();
-  if (bridge?.isConnected && bridge.isConnected() && bridge.printBase64) {
-    const b64 = uint8ToBase64(bytes);
-    await new Promise<void>((resolve, reject) => {
-      const prevHandler = (window as any).onAndroidBluetoothPrintDone;
-      const timer = setTimeout(() => {
-        (window as any).onAndroidBluetoothPrintDone = prevHandler;
-        reject(new Error("Waktu tunggu cetak Bluetooth habis (timeout)."));
-      }, 45000);
+async function ensureBleReady(preferredPrinterId?: string): Promise<BleGlobalState | null> {
+  const state = getBleState();
+  const nav = typeof navigator !== "undefined" ? (navigator as any) : null;
 
-      (window as any).onAndroidBluetoothPrintDone = (ok: boolean, errMsg: string) => {
-        clearTimeout(timer);
-        (window as any).onAndroidBluetoothPrintDone = prevHandler;
-        if (ok) resolve();
-        else reject(new Error(errMsg || "Gagal mengirim data ke printer Bluetooth."));
-      };
-
-      bridge.printBase64!(b64);
-    });
-    return;
+  // Attempt recovery via Web Bluetooth getDevices() if module/window state was lost
+  if (!state.device && preferredPrinterId && nav?.bluetooth?.getDevices) {
+    try {
+      const known: any[] = await nav.bluetooth.getDevices();
+      const found = known.find((d) => d.id === preferredPrinterId);
+      if (found) {
+        state.device = found;
+      }
+    } catch {}
   }
 
-  if (activeBleCharacteristic && activeBleDevice?.gatt?.connected) {
-    // Try larger MTU first for faster BLE streaming, falling back to 20 bytes if rejected
-    let mtu = 180;
-    let offset = 0;
-    while (offset < bytes.length) {
-      const chunk = bytes.slice(offset, offset + mtu);
-      try {
-        if (activeBleCharacteristic.properties.writeWithoutResponse) {
-          await activeBleCharacteristic.writeValueWithoutResponse(chunk);
-        } else {
-          await activeBleCharacteristic.writeValueWithResponse(chunk);
-        }
-        offset += chunk.length;
-        // Brief yield only every 5 packets to keep throughput high
-        if (offset % (mtu * 5) === 0) {
-          await new Promise((r) => setTimeout(r, 4));
-        }
-      } catch (err) {
-        if (mtu > 20) {
-          mtu = 20;
-        } else {
-          throw err;
-        }
+  if (!state.device) return null;
+
+  if (!state.device.gatt?.connected || !state.characteristic) {
+    state.reconnecting = true;
+    try {
+      const server = await state.device.gatt.connect();
+      const ch = await findWritableBleCharacteristic(server);
+      if (!ch) {
+        throw new Error("Service tulis printer BLE tidak ditemukan saat menyambung ulang.");
+      }
+      state.characteristic = ch;
+    } finally {
+      state.reconnecting = false;
+    }
+  }
+
+  return state;
+}
+
+async function writeBleBytesWithRecovery(state: BleGlobalState, bytes: Uint8Array): Promise<void> {
+  let mtu = state.safeMtu || 64;
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    // If GATT dropped mid-stream, auto-reconnect cleanly & step down to universal 20-byte MTU
+    if (!state.device?.gatt?.connected || !state.characteristic) {
+      mtu = 20;
+      state.safeMtu = 20;
+      const server = await state.device.gatt.connect();
+      const ch = await findWritableBleCharacteristic(server);
+      if (!ch) throw new Error("Koneksi BLE terputus di tengah cetak.");
+      state.characteristic = ch;
+    }
+
+    const ch = state.characteristic;
+    const chunk = bytes.slice(offset, offset + mtu);
+
+    try {
+      if (ch.properties?.writeWithoutResponse) {
+        await ch.writeValueWithoutResponse(chunk);
+        // Safe pacing for RPP02N BLE UART FIFO buffer
+        await new Promise((r) => setTimeout(r, 10));
+      } else {
+        await ch.writeValueWithResponse(chunk);
+      }
+      offset += chunk.length;
+    } catch (err) {
+      if (mtu > 20) {
+        // Shrink MTU to guaranteed 20-byte BLE ATT limit and retry same offset
+        mtu = 20;
+        state.safeMtu = 20;
+        await new Promise((r) => setTimeout(r, 30));
+      } else {
+        throw err;
       }
     }
+  }
+}
+
+export async function sendBytesToConnectedPrinter(
+  bytes: Uint8Array,
+  preferredPrinterId?: string,
+): Promise<void> {
+  const bridge = getAndroidBridge();
+
+  // 1. Native Android Bluetooth Classic SPP path
+  if (bridge && (bridge.isAvailable ? bridge.isAvailable() : true)) {
+    if (!bridge.isConnected?.() && preferredPrinterId && bridge.connect) {
+      // Auto-reconnect Android SPP socket transparently before printing
+      await new Promise<void>((resolve, reject) => {
+        const prevConn = (window as any).onAndroidBluetoothConnected;
+        const prevErr = (window as any).onAndroidBluetoothError;
+        const timer = setTimeout(() => {
+          (window as any).onAndroidBluetoothConnected = prevConn;
+          (window as any).onAndroidBluetoothError = prevErr;
+          reject(new Error("Gagal menyambung ulang ke printer Bluetooth."));
+        }, 7000);
+
+        (window as any).onAndroidBluetoothConnected = (info: any) => {
+          clearTimeout(timer);
+          (window as any).onAndroidBluetoothConnected = prevConn;
+          (window as any).onAndroidBluetoothError = prevErr;
+          prevConn?.(info);
+          resolve();
+        };
+        (window as any).onAndroidBluetoothError = (msg: string) => {
+          clearTimeout(timer);
+          (window as any).onAndroidBluetoothConnected = prevConn;
+          (window as any).onAndroidBluetoothError = prevErr;
+          reject(new Error(msg || "Gagal menyambung ke printer Bluetooth."));
+        };
+
+        bridge.connect!(preferredPrinterId);
+      });
+    }
+
+    if (bridge.isConnected?.() && bridge.printBase64) {
+      const b64 = uint8ToBase64(bytes);
+      await new Promise<void>((resolve, reject) => {
+        const prevHandler = (window as any).onAndroidBluetoothPrintDone;
+        const timer = setTimeout(() => {
+          (window as any).onAndroidBluetoothPrintDone = prevHandler;
+          reject(new Error("Waktu tunggu cetak Bluetooth habis (timeout)."));
+        }, 45000);
+
+        (window as any).onAndroidBluetoothPrintDone = (ok: boolean, errMsg: string) => {
+          clearTimeout(timer);
+          (window as any).onAndroidBluetoothPrintDone = prevHandler;
+          if (ok) resolve();
+          else reject(new Error(errMsg || "Gagal mengirim data ke printer Bluetooth."));
+        };
+
+        bridge.printBase64!(b64);
+      });
+      return;
+    }
+  }
+
+  // 2. Web Bluetooth BLE path (with automatic idle reconnect & MTU recovery)
+  const bleState = await ensureBleReady(preferredPrinterId);
+  if (bleState?.characteristic && bleState.device?.gatt?.connected) {
+    await writeBleBytesWithRecovery(bleState, bytes);
     return;
   }
 
-  throw new Error("Belum ada printer Bluetooth yang terhubung.");
+  getBleState().onDisconnectedCallback?.();
+  throw new Error("Koneksi printer Bluetooth terputus. Silakan klik Hubungkan ulang.");
 }
 
 export function triggerAndroidSystemPrint(canvas: HTMLCanvasElement, title: string): boolean {
