@@ -448,8 +448,10 @@ public class MainActivity extends BridgeActivity {
                     evalJs("if (window.onAndroidBluetoothPrintDone) { window.onAndroidBluetoothPrintDone(true, ''); }");
                 } catch (Exception e) {
                     Log.e(TAG, "printBase64 failed", e);
+                    closeBtConnection();
                     String safeMsg = JSONObject.quote(e.getMessage() != null ? e.getMessage() : "Gagal mencetak");
                     evalJs("if (window.onAndroidBluetoothPrintDone) { window.onAndroidBluetoothPrintDone(false, " + safeMsg + "); }");
+                    evalJs("if (window.onAndroidBluetoothDisconnected) { window.onAndroidBluetoothDisconnected(); }");
                 }
             });
         }
