@@ -31,13 +31,15 @@ import type { ProductCategory, ProductRow } from "@/lib/pdf-parser";
 import { renderPdfPageToCanvas, renderPdfPageToDataUrl } from "@/lib/pdf-renderer";
 import {
   type BluetoothPrinterDevice,
-  type PaperWidthMm,
+  type PrintQualitySpeed,
   type PrinterProtocol,
   connectAndroidBluetoothPrinter,
   disconnectBluetoothPrinter,
   encodeCanvasToEscPos,
   encodeCanvasToTspl,
+  encodeFastTestPrint,
   getPairedAndroidPrinters,
+  getPrintableAreaDots,
   isAndroidNativeBluetoothAvailable,
   isWebBluetoothAvailable,
   requestAndConnectWebBluetoothPrinter,
@@ -128,10 +130,83 @@ export function PdfPreviewPrintTab({
   const [discoveredPrinters, setDiscoveredPrinters] = useState<BluetoothPrinterDevice[]>([]);
   const [connectedPrinter, setConnectedPrinter] = useState<BluetoothPrinterDevice | null>(null);
 
-  // Printer Settings
-  const [paperWidth, setPaperWidth] = useState<PaperWidthMm>(80);
-  const [protocol, setProtocol] = useState<PrinterProtocol>("escpos");
-  const [threshold, setThreshold] = useState<number>(175);
+  // Printer Settings (with localStorage persistence)
+  const [paperWidthInput, setPaperWidthInput] = useState<string>(() => {
+    if (typeof window === "undefined") return "80";
+    try {
+      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
+      return String(saved.paperWidthMm || "80");
+    } catch {
+      return "80";
+    }
+  });
+  const [paperHeightInput, setPaperHeightInput] = useState<string>(() => {
+    if (typeof window === "undefined") return "120";
+    try {
+      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
+      return String(saved.paperHeightMm || "120");
+    } catch {
+      return "120";
+    }
+  });
+  const [protocol, setProtocol] = useState<PrinterProtocol>(() => {
+    if (typeof window === "undefined") return "escpos";
+    try {
+      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
+      return saved.protocol === "tspl" ? "tspl" : "escpos";
+    } catch {
+      return "escpos";
+    }
+  });
+  const [threshold, setThreshold] = useState<number>(() => {
+    if (typeof window === "undefined") return 175;
+    try {
+      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
+      return typeof saved.threshold === "number" ? saved.threshold : 175;
+    } catch {
+      return 175;
+    }
+  });
+  const [speedMode, setSpeedMode] = useState<PrintQualitySpeed>(() => {
+    if (typeof window === "undefined") return "normal";
+    try {
+      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
+      return saved.speedMode === "fast" ? "fast" : "normal";
+    } catch {
+      return "normal";
+    }
+  });
+
+  const paperWidthMm = useMemo(() => {
+    const n = parseFloat(paperWidthInput);
+    return Number.isFinite(n) && n >= 20 ? Math.min(120, n) : 80;
+  }, [paperWidthInput]);
+
+  const paperHeightMm = useMemo(() => {
+    const n = parseFloat(paperHeightInput);
+    return Number.isFinite(n) && n >= 20 ? Math.min(300, n) : 120;
+  }, [paperHeightInput]);
+
+  const printAreaDots = useMemo(
+    () => getPrintableAreaDots(paperWidthMm, paperHeightMm, protocol),
+    [paperWidthMm, paperHeightMm, protocol],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(
+        "resi_print_settings_v1",
+        JSON.stringify({
+          paperWidthMm,
+          paperHeightMm,
+          protocol,
+          threshold,
+          speedMode,
+        }),
+      );
+    } catch {}
+  }, [paperWidthMm, paperHeightMm, protocol, threshold, speedMode]);
 
   // Print Job Progress
   const [printingKey, setPrintingKey] = useState<string | null>(null);
@@ -354,11 +429,17 @@ export function PdfPreviewPrintTab({
 
   const encodeCanvasForPrinter = useCallback(
     (canvas: HTMLCanvasElement) => {
+      const opts = {
+        paperWidthMm,
+        paperHeightMm,
+        threshold,
+        speedMode,
+      };
       return protocol === "tspl"
-        ? encodeCanvasToTspl(canvas, paperWidth, threshold)
-        : encodeCanvasToEscPos(canvas, paperWidth, threshold);
+        ? encodeCanvasToTspl(canvas, opts)
+        : encodeCanvasToEscPos(canvas, opts);
     },
-    [protocol, paperWidth, threshold],
+    [protocol, paperWidthMm, paperHeightMm, threshold, speedMode],
   );
 
   const printSinglePage = async (page: PdfPageCardData) => {
@@ -416,8 +497,8 @@ export function PdfPreviewPrintTab({
         const bytes = encodeCanvasForPrinter(canvas);
         await sendBytesToConnectedPrinter(bytes);
         printed++;
-        // Pause slightly between labels so thermal printer finishes feeding
-        await new Promise((r) => setTimeout(r, 250));
+        // Brief pause between labels so printer finishes feeding cleanly
+        await new Promise((r) => setTimeout(r, 120));
       }
       if (!cancelBatchRef.current) {
         toast.success(`Selesai mencetak ${printed} resi ${CATEGORY_META[cat].label}!`);
@@ -435,22 +516,15 @@ export function PdfPreviewPrintTab({
       return;
     }
     try {
-      const testCanvas = document.createElement("canvas");
-      testCanvas.width = 400;
-      testCanvas.height = 140;
-      const ctx = testCanvas.getContext("2d")!;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, 400, 140);
-      ctx.fillStyle = "#000000";
-      ctx.font = "bold 24px sans-serif";
-      ctx.fillText("TEST PRINT RESI SCANNER", 20, 48);
-      ctx.font = "18px sans-serif";
-      ctx.fillText(`Printer: ${connectedPrinter.name}`, 20, 84);
-      ctx.fillText(`Kertas: ${paperWidth}mm | Mode: ${protocol.toUpperCase()}`, 20, 114);
-
-      const bytes = encodeCanvasForPrinter(testCanvas);
+      // Uses ultra-fast native ESC/POS text or TSPL BOX+TEXT (~200 bytes) for instant printout
+      const bytes = encodeFastTestPrint(
+        connectedPrinter.name,
+        protocol,
+        paperWidthMm,
+        paperHeightMm,
+      );
       await sendBytesToConnectedPrinter(bytes);
-      toast.success("Test print berhasil dikirim!");
+      toast.success("Test print cepat berhasil dikirim!");
     } catch (err: any) {
       toast.error(err?.message || "Test print gagal.");
     }
@@ -511,8 +585,8 @@ export function PdfPreviewPrintTab({
               </p>
               <p className="text-[11px] text-muted-foreground truncate">
                 {connectedPrinter
-                  ? `Terhubung · ${paperWidth}mm · ${protocol.toUpperCase()}`
-                  : "Cari & hubungkan printer thermal via Bluetooth untuk cetak resi"}
+                  ? `Terhubung · ${paperWidthMm}×${paperHeightMm}mm · ${protocol.toUpperCase()} (${speedMode === "fast" ? "Cepat" : "Normal"})`
+                  : `Kertas ${paperWidthMm}×${paperHeightMm}mm · Cari & hubungkan printer Bluetooth`}
               </p>
             </div>
           </div>
@@ -953,33 +1027,104 @@ export function PdfPreviewPrintTab({
 
             {/* THERMAL PRINT SETTINGS */}
             <div className="rounded-lg border border-border/70 bg-muted/15 p-3 space-y-3">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                <SlidersHorizontal className="h-3.5 w-3.5" /> Pengaturan Cetak Thermal
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                  <SlidersHorizontal className="h-3.5 w-3.5" /> Pengaturan Kertas & Cetak
+                </div>
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {printAreaDots.widthDots}×{printAreaDots.heightDots} dot
+                </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Lebar Kertas
-                  </label>
-                  <div className="grid grid-cols-3 gap-1">
-                    {([58, 80, 100] as PaperWidthMm[]).map((w) => (
+              {/* Quick Presets */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Preset Cepat
+                </label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { w: "58", h: "100", label: "58 × 100 mm" },
+                    { w: "80", h: "120", label: "80 × 120 mm" },
+                    { w: "100", h: "150", label: "100 × 150 mm" },
+                  ].map((preset) => {
+                    const active = paperWidthInput === preset.w && paperHeightInput === preset.h;
+                    return (
                       <button
-                        key={w}
+                        key={preset.label}
                         type="button"
-                        onClick={() => setPaperWidth(w)}
+                        onClick={() => {
+                          setPaperWidthInput(preset.w);
+                          setPaperHeightInput(preset.h);
+                        }}
                         className={`rounded-md py-1 text-[11px] font-semibold border transition-colors ${
-                          paperWidth === w
+                          active
                             ? "bg-foreground text-background border-foreground"
                             : "bg-card text-muted-foreground border-border/80 hover:text-foreground"
                         }`}
                       >
-                        {w}mm
+                        {preset.label}
                       </button>
-                    ))}
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Manual Paper Width & Height Inputs */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="space-y-1">
+                  <label
+                    htmlFor="paper-width-mm"
+                    className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                  >
+                    Paper Width (mm)
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="paper-width-mm"
+                      type="number"
+                      min={20}
+                      max={120}
+                      step={1}
+                      value={paperWidthInput}
+                      onChange={(e) => setPaperWidthInput(e.target.value)}
+                      onBlur={() => setPaperWidthInput(String(paperWidthMm))}
+                      className="h-8 w-full rounded-md border border-border bg-card px-2.5 pr-9 text-xs font-semibold tabular-nums text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      placeholder="80"
+                    />
+                    <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-medium text-muted-foreground">
+                      mm
+                    </span>
                   </div>
                 </div>
 
+                <div className="space-y-1">
+                  <label
+                    htmlFor="paper-height-mm"
+                    className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                  >
+                    Paper Height (mm)
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="paper-height-mm"
+                      type="number"
+                      min={20}
+                      max={300}
+                      step={1}
+                      value={paperHeightInput}
+                      onChange={(e) => setPaperHeightInput(e.target.value)}
+                      onBlur={() => setPaperHeightInput(String(paperHeightMm))}
+                      className="h-8 w-full rounded-md border border-border bg-card px-2.5 pr-9 text-xs font-semibold tabular-nums text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      placeholder="120"
+                    />
+                    <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-medium text-muted-foreground">
+                      mm
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Mode Printer
@@ -1002,6 +1147,33 @@ export function PdfPreviewPrintTab({
                         }`}
                       >
                         {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Kecepatan Print
+                  </label>
+                  <div className="grid grid-cols-2 gap-1">
+                    {(
+                      [
+                        { id: "normal", label: "Tajam" },
+                        { id: "fast", label: "Cepat 2x" },
+                      ] as { id: PrintQualitySpeed; label: string }[]
+                    ).map((sp) => (
+                      <button
+                        key={sp.id}
+                        type="button"
+                        onClick={() => setSpeedMode(sp.id)}
+                        className={`rounded-md py-1 text-[11px] font-semibold border transition-colors ${
+                          speedMode === sp.id
+                            ? "bg-foreground text-background border-foreground"
+                            : "bg-card text-muted-foreground border-border/80 hover:text-foreground"
+                        }`}
+                      >
+                        {sp.label}
                       </button>
                     ))}
                   </div>

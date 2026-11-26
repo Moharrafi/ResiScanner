@@ -1,10 +1,18 @@
-// Bluetooth Thermal Printer Service & ESC/POS / TSPL Image Encoder
+// Bluetooth Thermal Printer Service & ESC/POS / TSPL Encoder
 // Supports:
 // 1. Native Android Bluetooth Classic (SPP RFCOMM) via window.AndroidBluetoothBridge
 // 2. Web Bluetooth (BLE) via navigator.bluetooth for Chrome / Edge browsers
+// 3. Manual Paper Width (mm) & Paper Height (mm) + high-speed streaming
 
-export type PaperWidthMm = 58 | 80 | 100;
 export type PrinterProtocol = "escpos" | "tspl";
+export type PrintQualitySpeed = "normal" | "fast";
+
+export type PrintPaperOptions = {
+  paperWidthMm: number;
+  paperHeightMm: number;
+  threshold?: number;
+  speedMode?: PrintQualitySpeed;
+};
 
 export type BluetoothPrinterDevice = {
   id: string; // MAC address on Android or BLE device.id on Web
@@ -14,19 +22,59 @@ export type BluetoothPrinterDevice = {
   source: "android" | "web";
 };
 
-export const PAPER_WIDTH_DOTS: Record<PaperWidthMm, number> = {
-  58: 384,
-  80: 576,
-  100: 768,
-};
+/**
+ * Converts manual Paper Width & Height (mm) to 203 DPI (8 dots/mm) printable dot bounds.
+ * Standard 58mm roll printers have 48mm (384 dots) printheads; 80mm rolls have 72mm (576 dots).
+ */
+export function getPrintableAreaDots(
+  paperWidthMm: number,
+  paperHeightMm: number,
+  protocol: PrinterProtocol,
+): { widthDots: number; heightDots: number; marginLeftDots: number; marginTopDots: number } {
+  const safeW = Math.max(20, Math.min(120, Number(paperWidthMm) || 80));
+  const safeH = Math.max(20, Math.min(300, Number(paperHeightMm) || 120));
+
+  if (protocol === "tspl") {
+    // 1.5mm safe margin around sticker edge
+    const rawW = Math.max(128, Math.round((safeW - 3) * 8));
+    const widthDots = Math.floor(rawW / 8) * 8;
+    const heightDots = Math.max(64, Math.round((safeH - 3) * 8));
+    return {
+      widthDots,
+      heightDots,
+      marginLeftDots: 12,
+      marginTopDots: 12,
+    };
+  }
+
+  // ESC/POS printable width mapping
+  let rawW: number;
+  if (safeW >= 56 && safeW <= 60) {
+    rawW = 384; // standard 58mm paper -> 48mm printhead
+  } else if (safeW >= 78 && safeW <= 82) {
+    rawW = 576; // standard 80mm paper -> 72mm printhead
+  } else {
+    rawW = Math.max(128, Math.round(safeW * 8));
+  }
+  const widthDots = Math.floor(rawW / 8) * 8;
+  const heightDots = Math.max(64, Math.round(safeH * 8));
+
+  return {
+    widthDots,
+    heightDots,
+    marginLeftDots: 0,
+    marginTopDots: 0,
+  };
+}
 
 /**
- * Trims outer pure-white margins of a canvas while preserving safe padding,
- * then scales proportionally to target thermal printer dot width.
+ * Trims outer pure-white margins of a canvas, then proportionally fits the content
+ * inside (targetWidthDots x maxHeightDots) so it never overflows onto extra labels.
  */
 function prepareThermalCanvas(
   sourceCanvas: HTMLCanvasElement,
-  targetWidth: number,
+  targetWidthDots: number,
+  maxHeightDots: number,
   trimMargins = true,
 ): HTMLCanvasElement {
   let sx = 0;
@@ -44,7 +92,6 @@ function prepareThermalCanvas(
       let maxX = -1;
       let maxY = -1;
 
-      // Sample every 2px for fast bounding box detection
       for (let y = 0; y < sh; y += 2) {
         for (let x = 0; x < sw; x += 2) {
           const i = (y * sw + x) * 4;
@@ -59,7 +106,7 @@ function prepareThermalCanvas(
       }
 
       if (maxX > minX && maxY > minY) {
-        const pad = 12;
+        const pad = 10;
         sx = Math.max(0, minX - pad);
         sy = Math.max(0, minY - pad);
         sw = Math.min(sourceCanvas.width - sx, maxX - sx + pad * 2);
@@ -68,35 +115,47 @@ function prepareThermalCanvas(
     }
   }
 
-  const ratio = targetWidth / sw;
-  const targetHeight = Math.max(8, Math.round(sh * ratio));
+  // Fit proportionally within manual paper width & height bounds
+  const scale = Math.min(targetWidthDots / sw, maxHeightDots / sh);
+  const drawW = Math.max(8, Math.round(sw * scale));
+  const drawH = Math.max(8, Math.round(sh * scale));
+  const offsetX = Math.max(0, Math.floor((targetWidthDots - drawW) / 2));
 
+  // Align canvas byte width cleanly and match actual drawn height (no wasted blank paper feed)
+  const outWidth = Math.floor(targetWidthDots / 8) * 8;
   const out = document.createElement("canvas");
-  out.width = targetWidth;
-  out.height = targetHeight;
+  out.width = outWidth;
+  out.height = drawH;
+
   const ctx = out.getContext("2d");
   if (!ctx) throw new Error("Canvas 2D context unavailable");
 
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, targetWidth, targetHeight);
+  ctx.fillRect(0, 0, out.width, out.height);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
+  ctx.drawImage(sourceCanvas, sx, sy, sw, sh, offsetX, 0, drawW, drawH);
 
   return out;
 }
 
 /**
- * Encodes an HTMLCanvasElement into ESC/POS raster graphics (GS v 0) bytes,
- * sliced into 200-row strips to prevent buffer overflow on thermal printers.
+ * Encodes an HTMLCanvasElement into ESC/POS raster graphics (GS v 0) bytes.
+ * Sends as a continuous block (zero inter-strip motor pauses) and supports fast mode (m=3).
  */
 export function encodeCanvasToEscPos(
   sourceCanvas: HTMLCanvasElement,
-  paperWidthMm: PaperWidthMm = 80,
-  threshold = 175,
+  opts: PrintPaperOptions,
 ): Uint8Array {
-  const targetWidth = PAPER_WIDTH_DOTS[paperWidthMm];
-  const canvas = prepareThermalCanvas(sourceCanvas, targetWidth, true);
+  const area = getPrintableAreaDots(opts.paperWidthMm, opts.paperHeightMm, "escpos");
+  const isFast = opts.speedMode === "fast";
+  const threshold = opts.threshold ?? 175;
+
+  // In fast mode (m=3, double-width & double-height), send 1/2 width & 1/2 height -> 4x smaller payload
+  const targetW = isFast ? Math.floor(area.widthDots / 2 / 8) * 8 : area.widthDots;
+  const maxH = isFast ? Math.floor(area.heightDots / 2) : area.heightDots;
+
+  const canvas = prepareThermalCanvas(sourceCanvas, targetW, maxH, true);
   const ctx = canvas.getContext("2d")!;
   const { width, height } = canvas;
   const imgData = ctx.getImageData(0, 0, width, height).data;
@@ -106,17 +165,19 @@ export function encodeCanvasToEscPos(
   const xH = (bytesPerRow >> 8) & 0xff;
 
   const chunks: Uint8Array[] = [];
-  // ESC @ (Initialize printer)
+  // ESC @ (Init)
   chunks.push(new Uint8Array([0x1b, 0x40]));
 
-  const stripHeight = 200;
+  const rasterMode = isFast ? 0x03 : 0x00;
+  // Use large stripHeight so standard labels print in 1 single GS v 0 command (no stepper pause)
+  const stripHeight = 2048;
+
   for (let startY = 0; startY < height; startY += stripHeight) {
     const h = Math.min(stripHeight, height - startY);
     const yL = h & 0xff;
     const yH = (h >> 8) & 0xff;
 
-    // GS v 0 m xL xH yL yH
-    const header = new Uint8Array([0x1d, 0x76, 0x30, 0x00, xL, xH, yL, yH]);
+    const header = new Uint8Array([0x1d, 0x76, 0x30, rasterMode, xL, xH, yL, yH]);
     const raster = new Uint8Array(bytesPerRow * h);
 
     for (let y = 0; y < h; y++) {
@@ -128,7 +189,6 @@ export function encodeCanvasToEscPos(
           if (x < width) {
             const idx = (srcY * width + x) * 4;
             const lum = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
-            // ESC/POS: 1 = black dot, 0 = white
             if (lum < threshold) {
               byte |= 1 << (7 - bit);
             }
@@ -142,34 +202,36 @@ export function encodeCanvasToEscPos(
     chunks.push(raster);
   }
 
-  // Feed 3 lines + partial cut (ignored safely by printers without cutter)
+  // Feed 3 lines + partial cut
   chunks.push(new Uint8Array([0x1b, 0x64, 0x03, 0x1d, 0x56, 0x42, 0x00]));
-
   return concatUint8Arrays(chunks);
 }
 
 /**
- * Encodes an HTMLCanvasElement into TSPL BITMAP command for label printers.
- * Note: TSPL BITMAP uses 0 = black dot, 1 = white background.
+ * Encodes an HTMLCanvasElement into TSPL BITMAP command for label printers,
+ * respecting exact manual paperWidthMm x paperHeightMm and high print speed.
  */
 export function encodeCanvasToTspl(
   sourceCanvas: HTMLCanvasElement,
-  paperWidthMm: PaperWidthMm = 80,
-  threshold = 175,
+  opts: PrintPaperOptions,
 ): Uint8Array {
-  const targetWidth = PAPER_WIDTH_DOTS[paperWidthMm];
-  const canvas = prepareThermalCanvas(sourceCanvas, targetWidth, true);
+  const safeW = Math.max(20, Math.min(120, Number(opts.paperWidthMm) || 100));
+  const safeH = Math.max(20, Math.min(300, Number(opts.paperHeightMm) || 150));
+  const area = getPrintableAreaDots(safeW, safeH, "tspl");
+  const threshold = opts.threshold ?? 175;
+  const speed = opts.speedMode === "fast" ? 6 : 4;
+
+  const canvas = prepareThermalCanvas(sourceCanvas, area.widthDots, area.heightDots, true);
   const ctx = canvas.getContext("2d")!;
   const { width, height } = canvas;
   const imgData = ctx.getImageData(0, 0, width, height).data;
 
   const bytesPerRow = Math.ceil(width / 8);
-  // 203 DPI ≈ 8 dots/mm
-  const heightMm = Math.max(20, Math.ceil(height / 8) + 2);
+  const yOffset = Math.max(area.marginTopDots, Math.floor((safeH * 8 - height) / 2));
 
   const enc = new TextEncoder();
   const cmdStart = enc.encode(
-    `SIZE ${paperWidthMm} mm,${heightMm} mm\r\nGAP 2 mm,0 mm\r\nDIRECTION 1\r\nCLS\r\nBITMAP 0,0,${bytesPerRow},${height},0,`,
+    `SIZE ${safeW} mm,${safeH} mm\r\nGAP 2 mm,0 mm\r\nSPEED ${speed}\r\nDENSITY 8\r\nDIRECTION 1\r\nCLS\r\nBITMAP ${area.marginLeftDots},${yOffset},${bytesPerRow},${height},0,`,
   );
 
   const bitmap = new Uint8Array(bytesPerRow * height);
@@ -181,7 +243,6 @@ export function encodeCanvasToTspl(
         if (x < width) {
           const idx = (y * width + x) * 4;
           const lum = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
-          // TSPL: clear bit (0) for black pixel
           if (lum < threshold) {
             byte &= ~(1 << (7 - bit));
           }
@@ -193,6 +254,59 @@ export function encodeCanvasToTspl(
 
   const cmdEnd = enc.encode(`\r\nPRINT 1,1\r\n`);
   return concatUint8Arrays([cmdStart, bitmap, cmdEnd]);
+}
+
+/**
+ * Generates an ultra-fast native text Test Print (~200 bytes) that prints instantly (< 0.3s)
+ * to verify connection and paper dimensions without transmitting heavy graphics.
+ */
+export function encodeFastTestPrint(
+  printerName: string,
+  protocol: PrinterProtocol,
+  paperWidthMm: number,
+  paperHeightMm: number,
+): Uint8Array {
+  const safeW = Math.max(20, Math.min(120, Number(paperWidthMm) || 80));
+  const safeH = Math.max(20, Math.min(300, Number(paperHeightMm) || 120));
+  const enc = new TextEncoder();
+
+  if (protocol === "tspl") {
+    const maxW = Math.max(100, safeW * 8 - 16);
+    const maxH = Math.max(100, safeH * 8 - 16);
+    const tspl =
+      `SIZE ${safeW} mm,${safeH} mm\r\n` +
+      `GAP 2 mm,0 mm\r\n` +
+      `SPEED 5\r\n` +
+      `DENSITY 8\r\n` +
+      `DIRECTION 1\r\n` +
+      `CLS\r\n` +
+      `BOX 16,16,${maxW},${maxH},3\r\n` +
+      `TEXT 36,40,"3",0,1,1,"RESI SCANNER OK"\r\n` +
+      `TEXT 36,80,"2",0,1,1,"Printer: ${printerName.slice(0, 22)}"\r\n` +
+      `TEXT 36,115,"2",0,1,1,"Kertas : ${safeW} x ${safeH} mm"\r\n` +
+      `TEXT 36,150,"2",0,1,1,"Mode   : TSPL (Cepat)"\r\n` +
+      `PRINT 1,1\r\n`;
+    return enc.encode(tspl);
+  }
+
+  // Native ESC/POS text test print (instant, ~200 bytes)
+  const sep = safeW <= 60 ? "--------------------------------\n" : "------------------------------------------\n";
+  const textBody =
+    `RESI SCANNER - TEST PRINT\n` +
+    sep +
+    `Printer : ${printerName.slice(0, 26)}\n` +
+    `Kertas  : ${safeW}mm x ${safeH}mm\n` +
+    `Mode    : ESC/POS (Siap Cetak)\n` +
+    sep +
+    `\n\n`;
+
+  return concatUint8Arrays([
+    new Uint8Array([0x1b, 0x40, 0x1b, 0x61, 0x01, 0x1b, 0x45, 0x01]), // Init, center, bold
+    enc.encode("TEST PRINT BERHASIL\n"),
+    new Uint8Array([0x1b, 0x45, 0x00, 0x1b, 0x61, 0x00]), // Normal, left align
+    enc.encode(textBody),
+    new Uint8Array([0x1d, 0x56, 0x42, 0x00]), // Partial cut
+  ]);
 }
 
 function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
@@ -373,17 +487,29 @@ export async function sendBytesToConnectedPrinter(bytes: Uint8Array): Promise<vo
   }
 
   if (activeBleCharacteristic && activeBleDevice?.gatt?.connected) {
-    // BLE safe chunk size (20 bytes works reliably across older & newer BLE printers)
-    const mtu = 64;
-    for (let i = 0; i < bytes.length; i += mtu) {
-      const chunk = bytes.slice(i, i + mtu);
-      if (activeBleCharacteristic.properties.writeWithoutResponse) {
-        await activeBleCharacteristic.writeValueWithoutResponse(chunk);
-      } else {
-        await activeBleCharacteristic.writeValueWithResponse(chunk);
+    // Try larger MTU first for faster BLE streaming, falling back to 20 bytes if rejected
+    let mtu = 180;
+    let offset = 0;
+    while (offset < bytes.length) {
+      const chunk = bytes.slice(offset, offset + mtu);
+      try {
+        if (activeBleCharacteristic.properties.writeWithoutResponse) {
+          await activeBleCharacteristic.writeValueWithoutResponse(chunk);
+        } else {
+          await activeBleCharacteristic.writeValueWithResponse(chunk);
+        }
+        offset += chunk.length;
+        // Brief yield only every 5 packets to keep throughput high
+        if (offset % (mtu * 5) === 0) {
+          await new Promise((r) => setTimeout(r, 4));
+        }
+      } catch (err) {
+        if (mtu > 20) {
+          mtu = 20;
+        } else {
+          throw err;
+        }
       }
-      // Small delay so printer buffer doesn't drop packets
-      await new Promise((r) => setTimeout(r, 12));
     }
     return;
   }

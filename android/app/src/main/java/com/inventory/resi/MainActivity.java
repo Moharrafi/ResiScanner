@@ -438,13 +438,13 @@ public class MainActivity extends BridgeActivity {
             btExecutor.execute(() -> {
                 try {
                     byte[] data = Base64.decode(base64Bytes, Base64.DEFAULT);
-                    int chunkSize = 1024;
+                    // Stream in 4KB blocks directly; BluetoothSocket RFCOMM handles hardware flow control natively
+                    int chunkSize = 4096;
                     for (int i = 0; i < data.length; i += chunkSize) {
                         int len = Math.min(chunkSize, data.length - i);
                         btOutputStream.write(data, i, len);
-                        btOutputStream.flush();
-                        Thread.sleep(15);
                     }
+                    btOutputStream.flush();
                     evalJs("if (window.onAndroidBluetoothPrintDone) { window.onAndroidBluetoothPrintDone(true, ''); }");
                 } catch (Exception e) {
                     Log.e(TAG, "printBase64 failed", e);
