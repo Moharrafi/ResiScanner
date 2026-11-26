@@ -12,6 +12,7 @@ export type ProductRow = {
   size: string | null; // normalized size, e.g. "5KG"
   qty: number;
   pageWeightSize?: string | null; // fallback weight extracted from shipping label (e.g. "1KG")
+  pageNumber?: number; // 1-indexed page number in source PDF
 };
 
 export type GroupedProduct = {
@@ -215,9 +216,15 @@ export function computeUnitWeightSize(totalWeightInKg: number | null, qty: numbe
 
 type LineItem = { y: number; x: number; str: string; width: number };
 
-export async function extractRowsFromPdf(
-  file: File,
-): Promise<{ name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[]> {
+export type RawExtractedRow = {
+  name: string;
+  sku?: string | null;
+  qty: number;
+  pageWeightSize?: string | null;
+  pageNumber?: number;
+};
+
+export async function extractRowsFromPdf(file: File): Promise<RawExtractedRow[]> {
   const pdfjs: any = await import("pdfjs-dist/build/pdf.mjs");
   const workerSrc = (await import("pdfjs-dist/build/pdf.worker.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -225,7 +232,7 @@ export async function extractRowsFromPdf(
   const buf = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
 
-  const allRows: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[] = [];
+  const allRows: RawExtractedRow[] = [];
 
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
@@ -256,7 +263,7 @@ export async function extractRowsFromPdf(
     );
     const pageWeightInKg = extractPageWeightInKg(textLines);
 
-    const pageRows: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[] = [];
+    const pageRows: RawExtractedRow[] = [];
 
     // Detect the product table header on this page. Supports both formal table headers
     // ("Product Name", "Seller SKU", "Qty") and shipping label packing slips.
@@ -405,11 +412,15 @@ export async function extractRowsFromPdf(
             sku: skuToken,
             qty,
             pageWeightSize: unitWeightSize,
+            pageNumber: p,
           });
         }
       }
     }
 
+    for (const pr of pageRows) {
+      pr.pageNumber = p;
+    }
     allRows.push(...pageRows);
   }
 
@@ -417,7 +428,7 @@ export async function extractRowsFromPdf(
 }
 
 export function parseProducts(
-  raw: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null }[],
+  raw: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null; pageNumber?: number }[],
 ): {
   rows: ProductRow[];
   grouped: GroupedProduct[];
@@ -448,6 +459,7 @@ export function parseProducts(
       size: finalSize,
       qty: r.qty,
       pageWeightSize: r.pageWeightSize,
+      pageNumber: r.pageNumber,
     };
   });
 

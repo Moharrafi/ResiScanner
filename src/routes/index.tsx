@@ -31,7 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { PdfPreviewPrintTab } from "@/components/PdfPreviewPrintTab";
 import {
   Dialog,
   DialogContent,
@@ -75,6 +75,7 @@ export const Route = createFileRoute("/")({
 
 type FileEntry = {
   name: string;
+  file: File;
   rows: ProductRow[];
 };
 
@@ -118,7 +119,7 @@ function Index() {
         try {
           const rawRows = await extractRowsFromPdf(file);
           const { rows: parsed } = parseProducts(rawRows);
-          newEntries.push({ name: file.name, rows: parsed });
+          newEntries.push({ name: file.name, file, rows: parsed });
         } catch (e) {
           console.error(e);
           toast.error(`Gagal membaca ${file.name}`);
@@ -170,7 +171,7 @@ function Index() {
   const resetAll = () => {
     setFiles([]);
     setOpenSizes({});
-    setOpenCategories({ hitam: true, hijau: true, bitumax: true });
+    setOpenCategories({});
   };
 
   // Merge all rows across uploaded files, then regroup
@@ -181,6 +182,7 @@ function Index() {
         sku: r.sku,
         qty: r.qty,
         pageWeightSize: r.pageWeightSize,
+        pageNumber: r.pageNumber,
       })),
     );
     return parseProducts(allRaw);
@@ -689,61 +691,9 @@ ${inventoryValues.join(",\n")};`
                 </div>
               </TabsContent>
 
-              {/* TAB 3: DETAIL MENTAH */}
+              {/* TAB 3: DETAIL MENTAH (GAMBAR RESI PDF PER KATEGORI + PRINT BLUETOOTH) */}
               <TabsContent value="raw" className="mt-4">
-                <Card className="border-0 shadow-sm" style={{ boxShadow: "var(--shadow-soft)" }}>
-                  <CardHeader className="py-3 px-4 sm:px-5">
-                    <CardTitle className="text-sm sm:text-base font-bold">Baris Mentah Terdeteksi ({rows.length})</CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0 sm:p-4">
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="text-xs">Nama Produk</TableHead>
-                            <TableHead className="w-24 text-xs">Kategori</TableHead>
-                            <TableHead className="w-28 text-xs">Seller SKU</TableHead>
-                            <TableHead className="w-20 text-xs">Ukuran</TableHead>
-                            <TableHead className="w-16 text-right text-xs">Qty</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {rows.map((r, i) => (
-                            <TableRow key={i} className="text-xs">
-                              <TableCell className="font-medium py-2.5 leading-snug">{r.name}</TableCell>
-                              <TableCell className="py-2.5">
-                                <Badge
-                                  variant="outline"
-                                  className={`text-[10px] px-2 py-0.5 font-bold uppercase ${
-                                    r.category === "hitam"
-                                      ? "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-300"
-                                      : r.category === "hijau"
-                                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                                      : r.category === "bitumax"
-                                      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                                      : "border-border bg-muted/40"
-                                  }`}
-                                >
-                                  {r.category}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="py-2.5 font-mono text-[11px] text-muted-foreground">
-                                {r.sku || "-"}
-                              </TableCell>
-                              <TableCell className="py-2.5">
-                                <Badge variant={r.size ? "default" : "outline"} className="text-[10px] px-2 py-0.5 font-bold">
-                                  {r.size ?? "-"}
-                                  {r.pageWeightSize && r.size === r.pageWeightSize ? " (Resi)" : ""}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="text-right font-bold tabular-nums py-2.5">{r.qty}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </CardContent>
-                </Card>
+                <PdfPreviewPrintTab files={files} rows={rows} />
               </TabsContent>
             </Tabs>
 
