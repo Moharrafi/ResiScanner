@@ -97,6 +97,38 @@ function measureRectInkRatio(
   return total > 0 ? dark / total : 0;
 }
 
+function findHorizontalDividerY(
+  imgData: Uint8ClampedArray,
+  canvasW: number,
+  canvasH: number,
+  x0: number,
+  x1: number,
+  yStart: number,
+  yEnd: number,
+): number | null {
+  const sx0 = Math.max(0, Math.floor(x0));
+  const sx1 = Math.min(canvasW, Math.ceil(x1));
+  const sy0 = Math.max(0, Math.floor(yStart));
+  const sy1 = Math.min(canvasH - 1, Math.ceil(yEnd));
+  if (sx1 <= sx0 || sy1 <= sy0) return null;
+
+  for (let y = sy0; y <= sy1; y++) {
+    const rowOff = y * canvasW;
+    let total = 0;
+    let dark = 0;
+    for (let x = sx0; x < sx1; x += 3) {
+      const i = (rowOff + x) * 4;
+      const lum = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+      if (lum < 200 && imgData[i + 3] > 20) dark++;
+      total++;
+    }
+    if (total > 0 && dark / total > 0.72) {
+      return y;
+    }
+  }
+  return null;
+}
+
 function drawStampBox(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -190,15 +222,30 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
 
   // Target right edge & vertical band inside the shipping label
   const xRightFrac = isCargoOrFastTrack ? 0.964 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
-  const yTopFrac = isCargoOrFastTrack ? 0.248 : 0.214;
-  const yBotFrac = isCargoOrFastTrack ? 0.352 : 0.330;
 
-  const bandTop = inkMinY + inkH * yTopFrac;
-  const bandBot = inkMinY + inkH * yBotFrac;
+  let bandTop = inkMinY + inkH * (isCargoOrFastTrack ? 0.255 : 0.214);
+  let bandBot = inkMinY + inkH * (isCargoOrFastTrack ? 0.372 : 0.330);
+
+  if (isCargoOrFastTrack) {
+    // Detect exact black horizontal line above Pengirim/QR box so stamp sits right down to that line
+    const detectedDividerY = findHorizontalDividerY(
+      imgData,
+      w,
+      h,
+      inkMinX + inkW * 0.10,
+      inkMinX + inkW * 0.90,
+      inkMinY + inkH * 0.33,
+      inkMinY + inkH * 0.42,
+    );
+    const dividerY = detectedDividerY ?? inkMinY + inkH * 0.375;
+    bandTop = inkMinY + (dividerY - inkMinY) * 0.73; // Safely below "...-XX" route code line
+    bandBot = dividerY - Math.max(4, Math.round(inkW * 0.007)); // Sit snugly right above the divider line
+  }
+
   const bandH = Math.max(40, bandBot - bandTop);
 
-  // Size stamp generously; on J&T Cargo keep box cleanly below top route line and just above QR divider
-  const targetBoxH = Math.round(bandH * (isCargoOrFastTrack ? 0.90 : 0.84));
+  // Size stamp generously; on J&T Cargo keep box cleanly below top route line and flush above divider line
+  const targetBoxH = Math.round(bandH * (isCargoOrFastTrack ? 0.94 : 0.84));
   let fontSize = Math.max(24, Math.round(targetBoxH / 1.28));
   const maxBoxW = Math.round(inkW * 0.42);
 
@@ -220,7 +267,7 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
 
   const placedX = Math.max(inkMinX + 8, Math.round(inkMinX + inkW * xRightFrac - dims.boxW));
   const placedY = isCargoOrFastTrack
-    ? Math.round(bandBot - dims.boxH - Math.max(4, bandH * 0.04))
+    ? Math.round(bandBot - dims.boxH)
     : Math.round(bandTop + (bandH - dims.boxH) / 2);
 
   drawStampBox(ctx, text, placedX, placedY, dims.boxW, dims.boxH, fontSize);
