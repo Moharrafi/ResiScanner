@@ -222,9 +222,9 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
     topLeftBarcodeRatio > 0.20 && midRightQrRatio > 0.12 && fullBlackBandRatio < 0.55;
 
   // Target right edge & vertical band inside the shipping label
-  const xRightFrac = isCargoOrFastTrack ? 0.966 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
+  const xRightFrac = isCargoOrFastTrack ? 0.970 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
 
-  let bandTop = inkMinY + inkH * (isCargoOrFastTrack ? 0.280 : 0.214);
+  let bandTop = inkMinY + inkH * (isCargoOrFastTrack ? 0.270 : 0.214);
   let bandBot = inkMinY + inkH * (isCargoOrFastTrack ? 0.372 : 0.330);
 
   if (isCargoOrFastTrack) {
@@ -239,24 +239,25 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
       inkMinY + inkH * 0.42,
     );
     const dividerY = detectedDividerY ?? inkMinY + inkH * 0.375;
-    bandTop = inkMinY + (dividerY - inkMinY) * 0.750; // Safely below "...-XX" route code line
-    bandBot = dividerY - Math.max(4, Math.round(inkW * 0.007)); // Sit snugly right above the divider line
+    bandTop = inkMinY + (dividerY - inkMinY) * 0.708; // Safely below "...-XX" route code line while maximizing height
+    bandBot = dividerY - Math.max(3, Math.round(inkW * 0.005)); // Sit snugly right above the divider line
   }
 
   const bandH = Math.max(40, bandBot - bandTop);
 
   // Size stamp generously; on J&T Cargo keep box cleanly below top route line and flush above divider line
-  const targetBoxH = Math.round(bandH * (isCargoOrFastTrack ? 0.94 : 0.84));
-  let fontSize = Math.max(24, Math.round(targetBoxH / 1.28));
-  const maxBoxW = Math.round(inkW * (isCargoOrFastTrack ? 0.28 : 0.42));
+  const targetBoxH = Math.round(bandH * (isCargoOrFastTrack ? 0.96 : 0.84));
+  const boxHeightRatio = isCargoOrFastTrack ? 1.20 : 1.28;
+  let fontSize = Math.max(24, Math.round(targetBoxH / boxHeightRatio));
+  const maxBoxW = Math.round(inkW * (isCargoOrFastTrack ? 0.305 : 0.42));
 
   const computeDimensions = (fs: number) => {
     ctx.font = `900 ${fs}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
     const measuredW = Math.ceil(ctx.measureText(text).width);
-    const padX = Math.max(12, Math.round(fs * 0.32));
-    const padY = Math.max(5, Math.round(fs * 0.13));
-    const boxW = Math.max(measuredW + padX * 2, Math.round(fs * 1.38));
-    const boxH = Math.round(fs * 1.02 + padY * 2);
+    const padX = Math.max(12, Math.round(fs * (isCargoOrFastTrack ? 0.26 : 0.32)));
+    const padY = Math.max(4, Math.round(fs * (isCargoOrFastTrack ? 0.10 : 0.13)));
+    const boxW = Math.max(measuredW + padX * 2, Math.round(fs * (isCargoOrFastTrack ? 1.32 : 1.38)));
+    const boxH = Math.round(fs * (isCargoOrFastTrack ? 1.0 : 1.02) + padY * 2);
     return { boxW, boxH };
   };
 
