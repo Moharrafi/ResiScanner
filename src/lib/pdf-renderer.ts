@@ -190,15 +190,15 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
 
   // Target right edge & vertical band inside the shipping label
   const xRightFrac = isCargoOrFastTrack ? 0.964 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
-  const yTopFrac = isCargoOrFastTrack ? 0.228 : 0.214;
-  const yBotFrac = isCargoOrFastTrack ? 0.358 : 0.330;
+  const yTopFrac = isCargoOrFastTrack ? 0.248 : 0.214;
+  const yBotFrac = isCargoOrFastTrack ? 0.352 : 0.330;
 
   const bandTop = inkMinY + inkH * yTopFrac;
   const bandBot = inkMinY + inkH * yBotFrac;
   const bandH = Math.max(40, bandBot - bandTop);
 
-  // Size stamp generously (~84% of available band height, scaled down horizontally only for long multi-item marks)
-  const targetBoxH = Math.round(bandH * 0.84);
+  // Size stamp generously; on J&T Cargo keep box cleanly below top route line and just above QR divider
+  const targetBoxH = Math.round(bandH * (isCargoOrFastTrack ? 0.90 : 0.84));
   let fontSize = Math.max(24, Math.round(targetBoxH / 1.28));
   const maxBoxW = Math.round(inkW * 0.42);
 
@@ -219,7 +219,9 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
   }
 
   const placedX = Math.max(inkMinX + 8, Math.round(inkMinX + inkW * xRightFrac - dims.boxW));
-  const placedY = Math.round(bandTop + (bandH - dims.boxH) / 2);
+  const placedY = isCargoOrFastTrack
+    ? Math.round(bandBot - dims.boxH - Math.max(4, bandH * 0.04))
+    : Math.round(bandTop + (bandH - dims.boxH) / 2);
 
   drawStampBox(ctx, text, placedX, placedY, dims.boxW, dims.boxH, fontSize);
 }
