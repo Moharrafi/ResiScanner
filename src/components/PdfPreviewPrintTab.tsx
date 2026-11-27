@@ -32,7 +32,6 @@ import {
   renderPdfPageForThermal,
   renderPdfPageToCanvas,
   renderPdfPageToDataUrl,
-  type StampPositionMode,
 } from "@/lib/pdf-renderer";
 import {
   type BluetoothPrinterDevice,
@@ -74,7 +73,6 @@ type PdfPageCardData = {
   totalQty: number;
   stampMark: string;
   activeStampMark: string | null;
-  stampPosition: StampPositionMode;
 };
 
 const CATEGORY_META: Record<
@@ -109,31 +107,22 @@ const CATEGORY_META: Record<
 // Shared in-memory preview cache keyed per File instance + page + stamp mark
 const previewDataUrlCache = new WeakMap<File, Map<string, string>>();
 
-function makePreviewCacheKey(
-  pageNumber: number,
-  stampMark: string | null,
-  stampPosition: StampPositionMode,
-): string {
-  return `${pageNumber}::${stampMark ?? "none"}::${stampPosition}`;
+function makePreviewCacheKey(pageNumber: number, stampMark: string | null): string {
+  return `${pageNumber}::${stampMark ?? "none"}`;
 }
 
 function getCachedPreviewUrl(
   file: File,
   pageNumber: number,
   stampMark: string | null,
-  stampPosition: StampPositionMode,
 ): string | null {
-  return (
-    previewDataUrlCache.get(file)?.get(makePreviewCacheKey(pageNumber, stampMark, stampPosition)) ??
-    null
-  );
+  return previewDataUrlCache.get(file)?.get(makePreviewCacheKey(pageNumber, stampMark)) ?? null;
 }
 
 function setCachedPreviewUrl(
   file: File,
   pageNumber: number,
   stampMark: string | null,
-  stampPosition: StampPositionMode,
   url: string,
 ): void {
   let fileMap = previewDataUrlCache.get(file);
@@ -141,7 +130,7 @@ function setCachedPreviewUrl(
     fileMap = new Map<string, string>();
     previewDataUrlCache.set(file, fileMap);
   }
-  fileMap.set(makePreviewCacheKey(pageNumber, stampMark, stampPosition), url);
+  fileMap.set(makePreviewCacheKey(pageNumber, stampMark), url);
 }
 
 export function PdfPreviewPrintTab({
@@ -218,15 +207,6 @@ export function PdfPreviewPrintTab({
       return true;
     }
   });
-  const [stampPosition, setStampPosition] = useState<StampPositionMode>(() => {
-    if (typeof window === "undefined") return "top";
-    try {
-      const saved = JSON.parse(localStorage.getItem("resi_print_settings_v1") || "{}");
-      return saved.stampPosition === "inside" ? "inside" : "top";
-    } catch {
-      return "top";
-    }
-  });
 
   const paperWidthMm = useMemo(() => {
     const n = parseFloat(paperWidthInput);
@@ -255,11 +235,10 @@ export function PdfPreviewPrintTab({
           threshold,
           speedMode,
           showStampMark,
-          stampPosition,
         }),
       );
     } catch {}
-  }, [paperWidthMm, paperHeightMm, protocol, threshold, speedMode, showStampMark, stampPosition]);
+  }, [paperWidthMm, paperHeightMm, protocol, threshold, speedMode, showStampMark]);
 
   // Print Job Progress
   const [printingKey, setPrintingKey] = useState<string | null>(null);
@@ -309,7 +288,6 @@ export function PdfPreviewPrintTab({
             totalQty: 0,
             stampMark: rawMark,
             activeStampMark: showStampMark && rawMark ? rawMark : null,
-            stampPosition,
           });
         }
         const entry = map.get(k)!;
@@ -342,7 +320,7 @@ export function PdfPreviewPrintTab({
       orderedCategories: cats,
       totalUniquePages: map.size,
     };
-  }, [files, showStampMark, stampPosition]);
+  }, [files, showStampMark]);
 
   // Register Android Native Bluetooth Event Listeners
   useEffect(() => {
@@ -450,13 +428,7 @@ export function PdfPreviewPrintTab({
       return;
     }
     let cancelled = false;
-    renderPdfPageToDataUrl(
-      zoomPage.file,
-      zoomPage.pageNumber,
-      2.2,
-      zoomPage.activeStampMark,
-      zoomPage.stampPosition,
-    )
+    renderPdfPageToDataUrl(zoomPage.file, zoomPage.pageNumber, 2.2, zoomPage.activeStampMark)
       .then((url) => {
         if (!cancelled) setZoomImageUrl(url);
       })
@@ -547,7 +519,6 @@ export function PdfPreviewPrintTab({
         page.pageNumber,
         printAreaDots.widthDots,
         page.activeStampMark,
-        page.stampPosition,
       );
       const bytes = encodeCanvasForPrinter(canvas, false);
       await sendBytesToConnectedPrinter(bytes, connectedPrinter.address);
@@ -588,7 +559,6 @@ export function PdfPreviewPrintTab({
         p.pageNumber,
         printAreaDots.widthDots,
         p.activeStampMark,
-        p.stampPosition,
       ).then((canvas) => encodeCanvasForPrinter(canvas, idx > 0));
       encodedCache.set(idx, prom);
       return prom;
@@ -668,7 +638,6 @@ export function PdfPreviewPrintTab({
         page.pageNumber,
         2.5,
         page.activeStampMark,
-        page.stampPosition,
       );
       const handledAndroid = triggerAndroidSystemPrint(
         canvas,
@@ -743,7 +712,7 @@ export function PdfPreviewPrintTab({
             <button
               type="button"
               onClick={() => setShowStampMark((v) => !v)}
-              title="Cetak tanda kategori & berat (contoh: B1, H5, 5) pada resi"
+              title="Cetak tanda kategori & berat (contoh: B1, H5, 5) otomatis di kanan atas resi"
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
                 showStampMark
                   ? "border-foreground/30 bg-foreground text-background shadow-2xs"
@@ -757,17 +726,6 @@ export function PdfPreviewPrintTab({
               />
               Tanda: B1/H5/5
             </button>
-
-            {showStampMark && (
-              <button
-                type="button"
-                onClick={() => setStampPosition((p) => (p === "top" ? "inside" : "top"))}
-                title="Pilih posisi tanda: Di Atas (Luar barcode) atau di ruang kosong dalam resi"
-                className="inline-flex items-center gap-1 rounded-lg border border-border/80 bg-muted/40 px-2.5 py-1.5 text-[11px] font-semibold text-foreground hover:bg-muted transition-colors"
-              >
-                {stampPosition === "top" ? "Di Atas (Luar)" : "Dalam Resi"}
-              </button>
-            )}
 
             {/* Toggle Gambar PDF vs Tabel Teks */}
             <div className="inline-flex rounded-lg border border-border/80 bg-muted/40 p-0.5">
@@ -1402,24 +1360,13 @@ function PdfPageCard({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [imgUrl, setImgUrl] = useState<string | null>(
-    () =>
-      getCachedPreviewUrl(
-        page.file,
-        page.pageNumber,
-        page.activeStampMark,
-        page.stampPosition,
-      ),
+    () => getCachedPreviewUrl(page.file, page.pageNumber, page.activeStampMark),
   );
   const [error, setError] = useState(false);
 
   useEffect(() => {
     setError(false);
-    const cached = getCachedPreviewUrl(
-      page.file,
-      page.pageNumber,
-      page.activeStampMark,
-      page.stampPosition,
-    );
+    const cached = getCachedPreviewUrl(page.file, page.pageNumber, page.activeStampMark);
     if (cached) {
       setImgUrl(cached);
       return;
@@ -1429,21 +1376,9 @@ function PdfPageCard({
     let observer: IntersectionObserver | null = null;
 
     const loadImage = () => {
-      renderPdfPageToDataUrl(
-        page.file,
-        page.pageNumber,
-        1.4,
-        page.activeStampMark,
-        page.stampPosition,
-      )
+      renderPdfPageToDataUrl(page.file, page.pageNumber, 1.4, page.activeStampMark)
         .then((url) => {
-          setCachedPreviewUrl(
-            page.file,
-            page.pageNumber,
-            page.activeStampMark,
-            page.stampPosition,
-            url,
-          );
+          setCachedPreviewUrl(page.file, page.pageNumber, page.activeStampMark, url);
           if (!cancelled) setImgUrl(url);
         })
         .catch(() => {
@@ -1470,14 +1405,7 @@ function PdfPageCard({
       cancelled = true;
       observer?.disconnect();
     };
-  }, [
-    page.file,
-    page.fileIdx,
-    page.fileName,
-    page.pageNumber,
-    page.activeStampMark,
-    page.stampPosition,
-  ]);
+  }, [page.file, page.fileIdx, page.fileName, page.pageNumber, page.activeStampMark]);
 
   const sizeSummary = page.items.map((it) => `${it.size ?? "-"} ×${it.qty}`).join(" · ");
 

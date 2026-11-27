@@ -27,8 +27,6 @@ async function getPdfDocument(file: File): Promise<any> {
   return promise;
 }
 
-export type StampPositionMode = "top" | "inside";
-
 function detectLabelInkBounds(canvas: HTMLCanvasElement): {
   inkMinX: number;
   inkMinY: number;
@@ -70,6 +68,35 @@ function detectLabelInkBounds(canvas: HTMLCanvasElement): {
   return { inkMinX, inkMinY, inkMaxX, inkMaxY, imgData };
 }
 
+function measureRectInkRatio(
+  imgData: Uint8ClampedArray,
+  canvasW: number,
+  canvasH: number,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+): number {
+  const x0 = Math.max(0, Math.floor(rx));
+  const y0 = Math.max(0, Math.floor(ry));
+  const x1 = Math.min(canvasW, Math.ceil(rx + rw));
+  const y1 = Math.min(canvasH, Math.ceil(ry + rh));
+  if (x1 <= x0 || y1 <= y0) return 0;
+
+  let total = 0;
+  let dark = 0;
+  for (let y = y0; y < y1; y += 3) {
+    const rowOff = y * canvasW;
+    for (let x = x0; x < x1; x += 3) {
+      const i = (rowOff + x) * 4;
+      const lum = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+      if (lum < 235 && imgData[i + 3] > 20) dark++;
+      total++;
+    }
+  }
+  return total > 0 ? dark / total : 0;
+}
+
 function drawStampBox(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -96,72 +123,16 @@ function drawStampBox(
   ctx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, x + boxW / 2, y + boxH / 2 + strokeW * 0.2);
+  ctx.fillText(text, x + boxW / 2, y + boxH / 2 + fontSize * 0.04);
   ctx.restore();
 }
 
 /**
- * Prepends a clean external header band directly above the entire shipping label (outside any box/barcode)
- * and renders a large, ultra-clear warehouse category stamp centered above the barcode.
- */
-function buildOuterTopStampedCanvas(
-  sourceCanvas: HTMLCanvasElement,
-  markText: string,
-): HTMLCanvasElement {
-  const text = markText.trim();
-  if (!text || sourceCanvas.width < 100 || sourceCanvas.height < 100) return sourceCanvas;
-
-  const w = sourceCanvas.width;
-  const h = sourceCanvas.height;
-  const { inkMinX, inkMinY, inkMaxX, inkMaxY } = detectLabelInkBounds(sourceCanvas);
-  const inkW = Math.max(100, inkMaxX - inkMinX);
-
-  const measureCtx = sourceCanvas.getContext("2d")!;
-  const baseSize = Math.round(inkW * 0.118);
-  const lengthAdj = text.length > 3 ? Math.max(0.62, 3.0 / text.length) : 1;
-  const fontSize = Math.max(28, Math.round(baseSize * lengthAdj));
-  measureCtx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  const measuredW = Math.ceil(measureCtx.measureText(text).width);
-
-  const padX = Math.max(16, Math.round(fontSize * 0.45));
-  const padY = Math.max(8, Math.round(fontSize * 0.16));
-  const boxW = Math.min(inkW, Math.max(measuredW + padX * 2, Math.round(fontSize * 1.55)));
-  const boxH = Math.round(fontSize * 1.02 + padY * 2);
-
-  const topMargin = Math.max(8, Math.round(inkW * 0.015));
-  const gapToReceipt = Math.max(10, Math.round(inkW * 0.022));
-  const headerBandH = topMargin + boxH + gapToReceipt;
-
-  // Trim excess empty bottom margin so overall height stays balanced while keeping every line of the receipt
-  const srcStartY = Math.max(0, inkMinY - 4);
-  const bottomPad = Math.max(12, Math.round(inkW * 0.025));
-  const srcEndY = Math.min(h, inkMaxY + bottomPad);
-  const bodyH = Math.max(40, srcEndY - srcStartY);
-
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = headerBandH + bodyH;
-
-  const ctx = out.getContext("2d");
-  if (!ctx) return sourceCanvas;
-
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, out.width, out.height);
-
-  // Copy receipt below the external header band
-  ctx.drawImage(sourceCanvas, 0, srcStartY, w, bodyH, 0, headerBandH, w, bodyH);
-
-  // Center large bold stamp cleanly above the outer border / barcode
-  const stampX = Math.round(inkMinX + (inkW - boxW) / 2);
-  const stampY = topMargin;
-  drawStampBox(ctx, text, stampX, stampY, boxW, boxH, fontSize);
-
-  return out;
-}
-
-/**
- * Finds a clean ink-free empty box inside the shipping label bounds (avoiding QR/barcode boxes),
- * prioritizing open white regions (COD row, product table right column), and stamps bold category text.
+ * Stamps a large, bold category+weight marker into the upper-right area of the shipping label:
+ * - On J&T Cargo / FastTrack: below the top barcode and above the QR box (right of route text)
+ * - On J&T Express & general labels: right side of the Penerima address band above Weight/Ship,
+ *   staying clear of QR/barcodes and right-edge tracking numbers. Overlapping trailing address text
+ *   is masked cleanly with a crisp white-backed box for maximum legibility.
  */
 export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: string | null): void {
   const text = (markText ?? "").trim();
@@ -173,170 +144,84 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
   const w = canvas.width;
   const h = canvas.height;
   const { inkMinX, inkMinY, inkMaxX, inkMaxY, imgData } = detectLabelInkBounds(canvas);
-  const inkW = inkMaxX - inkMinX;
-  const inkH = inkMaxY - inkMinY;
+  const inkW = Math.max(100, inkMaxX - inkMinX);
+  const inkH = Math.max(100, inkMaxY - inkMinY);
 
-  // Build 4px-cell Summed-Area Table of occupied (non-white) pixels for O(1) collision checks
-  const cell = 4;
-  const cols = Math.ceil(w / cell);
-  const rows = Math.ceil(h / cell);
-  const sat = new Int32Array((cols + 1) * (rows + 1));
-
-  for (let gy = 0; gy < rows; gy++) {
-    const pyStart = gy * cell;
-    const pyEnd = Math.min(h, pyStart + cell);
-    let rowRunningSum = 0;
-    for (let gx = 0; gx < cols; gx++) {
-      const pxStart = gx * cell;
-      const pxEnd = Math.min(w, pxStart + cell);
-      let occupied = 0;
-      outer: for (let py = pyStart; py < pyEnd; py++) {
-        const base = py * w;
-        for (let px = pxStart; px < pxEnd; px++) {
-          const i = (base + px) * 4;
-          const lum = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
-          if (lum < 235 && imgData[i + 3] > 20) {
-            occupied = 1;
-            break outer;
-          }
-        }
-      }
-      rowRunningSum += occupied;
-      sat[(gy + 1) * (cols + 1) + (gx + 1)] = sat[gy * (cols + 1) + (gx + 1)] + rowRunningSum;
-    }
-  }
-
-  const getInkCount = (x0: number, y0: number, rw: number, rh: number): { sum: number; total: number } => {
-    const gx0 = Math.max(0, Math.floor(x0 / cell));
-    const gy0 = Math.max(0, Math.floor(y0 / cell));
-    const gx1 = Math.min(cols, Math.ceil((x0 + rw) / cell));
-    const gy1 = Math.min(rows, Math.ceil((y0 + rh) / cell));
-    if (gx1 <= gx0 || gy1 <= gy0) return { sum: 1, total: 1 };
-    const stride = cols + 1;
-    const sum =
-      sat[gy1 * stride + gx1] -
-      sat[gy0 * stride + gx1] -
-      sat[gy1 * stride + gx0] +
-      sat[gy0 * stride + gx0];
-    return { sum, total: (gx1 - gx0) * (gy1 - gy0) };
-  };
-
-  const hasInkInRect = (x0: number, y0: number, rw: number, rh: number): boolean =>
-    getInkCount(x0, y0, rw, rh).sum > 0;
-
-  // Detect J&T Cargo / FastTrack layout where a QR code sits on middle-right (x: 64%-95%, y: 40%-56%)
-  // Never draw inside that QR box's top quiet zone!
-  const qrProbe = getInkCount(
-    inkMinX + inkW * 0.64,
-    inkMinY + inkH * 0.41,
-    inkW * 0.30,
+  // Classify courier layout so placement never touches QR codes, top barcodes, or right-edge tracking digits
+  const midRightQrRatio = measureRectInkRatio(
+    imgData,
+    w,
+    h,
+    inkMinX + inkW * 0.65,
+    inkMinY + inkH * 0.40,
+    inkW * 0.28,
     inkH * 0.14,
   );
-  const leftSideProbe = getInkCount(
-    inkMinX + inkW * 0.10,
-    inkMinY + inkH * 0.47,
-    inkW * 0.40,
-    inkH * 0.06,
+  const topRightQrRatio = measureRectInkRatio(
+    imgData,
+    w,
+    h,
+    inkMinX + inkW * 0.66,
+    inkMinY + inkH * 0.04,
+    inkW * 0.26,
+    inkH * 0.14,
   );
-  const hasRightMidQrBox =
-    qrProbe.sum / Math.max(1, qrProbe.total) > 0.14 &&
-    leftSideProbe.sum / Math.max(1, leftSideProbe.total) < 0.35;
+  const fullBlackBandRatio = measureRectInkRatio(
+    imgData,
+    w,
+    h,
+    inkMinX + inkW * 0.10,
+    inkMinY + inkH * 0.455,
+    inkW * 0.78,
+    inkH * 0.035,
+  );
+  const rightMarginTrackRatio = measureRectInkRatio(
+    imgData,
+    w,
+    h,
+    inkMinX + inkW * 0.942,
+    inkMinY + inkH * 0.18,
+    inkW * 0.045,
+    inkH * 0.24,
+  );
 
-  // Measure stamp box dimensions (enlarged high-legibility lettering)
-  const computeStampMetrics = (scaleFactor: number) => {
-    const baseSize = Math.round(inkW * 0.095 * scaleFactor);
-    const lengthAdj = text.length > 3 ? Math.max(0.66, 3.1 / text.length) : 1;
-    const fontSize = Math.max(22, Math.round(baseSize * lengthAdj));
-    ctx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  const isCargoOrFastTrack =
+    midRightQrRatio > 0.14 && topRightQrRatio < 0.16 && fullBlackBandRatio < 0.55;
+
+  // Target right edge & vertical band inside the shipping label
+  const xRightFrac = isCargoOrFastTrack ? 0.964 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
+  const yTopFrac = isCargoOrFastTrack ? 0.228 : 0.214;
+  const yBotFrac = isCargoOrFastTrack ? 0.358 : 0.330;
+
+  const bandTop = inkMinY + inkH * yTopFrac;
+  const bandBot = inkMinY + inkH * yBotFrac;
+  const bandH = Math.max(40, bandBot - bandTop);
+
+  // Size stamp generously (~84% of available band height, scaled down horizontally only for long multi-item marks)
+  const targetBoxH = Math.round(bandH * 0.84);
+  let fontSize = Math.max(24, Math.round(targetBoxH / 1.28));
+  const maxBoxW = Math.round(inkW * 0.42);
+
+  const computeDimensions = (fs: number) => {
+    ctx.font = `900 ${fs}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
     const measuredW = Math.ceil(ctx.measureText(text).width);
-    const padX = Math.max(12, Math.round(fontSize * 0.38));
-    const padY = Math.max(5, Math.round(fontSize * 0.16));
-    const boxW = Math.max(measuredW + padX * 2, Math.round(fontSize * 1.45));
-    const boxH = Math.round(fontSize * 1.02 + padY * 2);
-    return { fontSize, boxW, boxH };
+    const padX = Math.max(12, Math.round(fs * 0.32));
+    const padY = Math.max(5, Math.round(fs * 0.13));
+    const boxW = Math.max(measuredW + padX * 2, Math.round(fs * 1.38));
+    const boxH = Math.round(fs * 1.02 + padY * 2);
+    return { boxW, boxH };
   };
 
-  const zones = hasRightMidQrBox
-    ? [
-        // J&T Cargo / FastTrack: right of COD: row (safely below QR code box)
-        { x0: 0.58, x1: 0.96, y0: 0.57, y1: 0.69 },
-        // Bottom-right of product table
-        { x0: 0.48, x1: 0.96, y0: 0.72, y1: 0.92 },
-        // Bottom margin area
-        { x0: 0.05, x1: 0.95, y0: 0.85, y1: 0.98 },
-      ]
-    : [
-        // J&T Express: right half of COD middle band
-        { x0: 0.57, x1: 0.96, y0: 0.34, y1: 0.47 },
-        // Bottom-right of product table
-        { x0: 0.48, x1: 0.96, y0: 0.72, y1: 0.90 },
-        // Left half of COD middle band
-        { x0: 0.04, x1: 0.42, y0: 0.34, y1: 0.47 },
-        // Any open space outside QR/barcode regions
-        { x0: 0.05, x1: 0.95, y0: 0.24, y1: 0.94 },
-      ];
-
-  let placedX: number | null = null;
-  let placedY: number | null = null;
-  let chosen = computeStampMetrics(1);
-
-  const scaleSteps = [1.0, 0.9, 0.8, 0.7];
-  const clearance = Math.max(2, Math.round(inkW * 0.004));
-
-  outerSearch: for (const z of zones) {
-    for (const scaleTry of scaleSteps) {
-      const m = computeStampMetrics(scaleTry);
-      const checkW = m.boxW + clearance * 2;
-      const checkH = m.boxH + clearance * 2;
-
-      const rxStart = Math.round(inkMinX + inkW * z.x0);
-      const rxEnd = Math.round(inkMinX + inkW * z.x1) - checkW;
-      const ryStart = Math.round(inkMinY + inkH * z.y0);
-      const ryEnd = Math.round(inkMinY + inkH * z.y1) - checkH;
-      if (rxEnd < rxStart || ryEnd < ryStart) continue;
-
-      const step = Math.max(4, Math.round(cell * 1.5));
-      const centerX = Math.round((rxStart + rxEnd) / 2);
-      const xCandidates: number[] = [centerX];
-      for (let dx = step; centerX - dx >= rxStart || centerX + dx <= rxEnd; dx += step) {
-        if (centerX + dx <= rxEnd) xCandidates.push(centerX + dx);
-        if (centerX - dx >= rxStart) xCandidates.push(centerX - dx);
-      }
-
-      for (let cy = ryStart; cy <= ryEnd; cy += step) {
-        for (const cx of xCandidates) {
-          if (!hasInkInRect(cx, cy, checkW, checkH)) {
-            placedX = cx + clearance;
-            placedY = cy + clearance;
-            chosen = m;
-            break outerSearch;
-          }
-        }
-      }
-    }
+  let dims = computeDimensions(fontSize);
+  if (dims.boxW > maxBoxW) {
+    fontSize = Math.max(20, Math.round(fontSize * (maxBoxW / dims.boxW)));
+    dims = computeDimensions(fontSize);
   }
 
-  if (placedX === null || placedY === null) {
-    chosen = computeStampMetrics(0.85);
-    placedX = Math.max(8, Math.round(inkMinX + inkW * 0.95 - chosen.boxW));
-    placedY = Math.max(8, Math.round(inkMinY + inkH * 0.78));
-  }
+  const placedX = Math.max(inkMinX + 8, Math.round(inkMinX + inkW * xRightFrac - dims.boxW));
+  const placedY = Math.round(bandTop + (bandH - dims.boxH) / 2);
 
-  drawStampBox(ctx, text, placedX, placedY, chosen.boxW, chosen.boxH, chosen.fontSize);
-}
-
-function applyStampToCanvas(
-  canvas: HTMLCanvasElement,
-  stampMark?: string | null,
-  stampPosition: StampPositionMode = "top",
-): HTMLCanvasElement {
-  const text = (stampMark ?? "").trim();
-  if (!text) return canvas;
-  if (stampPosition === "top") {
-    return buildOuterTopStampedCanvas(canvas, text);
-  }
-  drawCategoryMarkOnCanvas(canvas, text);
-  return canvas;
+  drawStampBox(ctx, text, placedX, placedY, dims.boxW, dims.boxH, fontSize);
 }
 
 /**
@@ -347,7 +232,6 @@ export async function renderPdfPageToCanvas(
   pageNumber: number,
   scale = 2.0,
   stampMark?: string | null,
-  stampPosition: StampPositionMode = "top",
 ): Promise<HTMLCanvasElement> {
   const pdf = await getPdfDocument(file);
   const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
@@ -366,7 +250,8 @@ export async function renderPdfPageToCanvas(
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   await page.render({ canvasContext: ctx, viewport }).promise;
-  return applyStampToCanvas(canvas, stampMark, stampPosition);
+  if (stampMark) drawCategoryMarkOnCanvas(canvas, stampMark);
+  return canvas;
 }
 
 /**
@@ -378,7 +263,6 @@ export async function renderPdfPageForThermal(
   pageNumber: number,
   targetWidthDots: number,
   stampMark?: string | null,
-  stampPosition: StampPositionMode = "top",
 ): Promise<HTMLCanvasElement> {
   const pdf = await getPdfDocument(file);
   const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
@@ -401,7 +285,8 @@ export async function renderPdfPageForThermal(
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   await page.render({ canvasContext: ctx, viewport }).promise;
-  return applyStampToCanvas(canvas, stampMark, stampPosition);
+  if (stampMark) drawCategoryMarkOnCanvas(canvas, stampMark);
+  return canvas;
 }
 
 /**
@@ -412,8 +297,7 @@ export async function renderPdfPageToDataUrl(
   pageNumber: number,
   scale = 1.6,
   stampMark?: string | null,
-  stampPosition: StampPositionMode = "top",
 ): Promise<string> {
-  const canvas = await renderPdfPageToCanvas(file, pageNumber, scale, stampMark, stampPosition);
+  const canvas = await renderPdfPageToCanvas(file, pageNumber, scale, stampMark);
   return canvas.toDataURL("image/png");
 }
