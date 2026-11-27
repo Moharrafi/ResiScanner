@@ -189,14 +189,15 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
     inkW * 0.28,
     inkH * 0.14,
   );
-  const topRightQrRatio = measureRectInkRatio(
+  // Top-left/center 1D barcode region (y=8%-16%) is dense black bars on Cargo/FastTrack, sparse sender text on J&T Express
+  const topLeftBarcodeRatio = measureRectInkRatio(
     imgData,
     w,
     h,
-    inkMinX + inkW * 0.66,
-    inkMinY + inkH * 0.04,
-    inkW * 0.26,
-    inkH * 0.14,
+    inkMinX + inkW * 0.14,
+    inkMinY + inkH * 0.08,
+    inkW * 0.42,
+    inkH * 0.08,
   );
   const fullBlackBandRatio = measureRectInkRatio(
     imgData,
@@ -218,12 +219,12 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
   );
 
   const isCargoOrFastTrack =
-    midRightQrRatio > 0.14 && topRightQrRatio < 0.16 && fullBlackBandRatio < 0.55;
+    topLeftBarcodeRatio > 0.20 && midRightQrRatio > 0.12 && fullBlackBandRatio < 0.55;
 
   // Target right edge & vertical band inside the shipping label
-  const xRightFrac = isCargoOrFastTrack ? 0.964 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
+  const xRightFrac = isCargoOrFastTrack ? 0.966 : rightMarginTrackRatio > 0.03 ? 0.920 : 0.958;
 
-  let bandTop = inkMinY + inkH * (isCargoOrFastTrack ? 0.255 : 0.214);
+  let bandTop = inkMinY + inkH * (isCargoOrFastTrack ? 0.280 : 0.214);
   let bandBot = inkMinY + inkH * (isCargoOrFastTrack ? 0.372 : 0.330);
 
   if (isCargoOrFastTrack) {
@@ -238,7 +239,7 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
       inkMinY + inkH * 0.42,
     );
     const dividerY = detectedDividerY ?? inkMinY + inkH * 0.375;
-    bandTop = inkMinY + (dividerY - inkMinY) * 0.73; // Safely below "...-XX" route code line
+    bandTop = inkMinY + (dividerY - inkMinY) * 0.750; // Safely below "...-XX" route code line
     bandBot = dividerY - Math.max(4, Math.round(inkW * 0.007)); // Sit snugly right above the divider line
   }
 
@@ -247,7 +248,7 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
   // Size stamp generously; on J&T Cargo keep box cleanly below top route line and flush above divider line
   const targetBoxH = Math.round(bandH * (isCargoOrFastTrack ? 0.94 : 0.84));
   let fontSize = Math.max(24, Math.round(targetBoxH / 1.28));
-  const maxBoxW = Math.round(inkW * 0.42);
+  const maxBoxW = Math.round(inkW * (isCargoOrFastTrack ? 0.28 : 0.42));
 
   const computeDimensions = (fs: number) => {
     ctx.font = `900 ${fs}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
