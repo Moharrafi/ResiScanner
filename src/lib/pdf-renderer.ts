@@ -27,22 +27,20 @@ async function getPdfDocument(file: File): Promise<any> {
   return promise;
 }
 
-/**
- * Finds a clean ink-free white box inside the shipping label bounds using a 4px summed-area table,
- * prioritizing open zones (right of COD, product table right column, etc.), and stamps bold category text.
- */
-export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: string | null): void {
-  const text = (markText ?? "").trim();
-  if (!text) return;
+export type StampPositionMode = "top" | "inside";
 
-  const ctx = canvas.getContext("2d");
-  if (!ctx || canvas.width < 100 || canvas.height < 100) return;
-
+function detectLabelInkBounds(canvas: HTMLCanvasElement): {
+  inkMinX: number;
+  inkMinY: number;
+  inkMaxX: number;
+  inkMaxY: number;
+  imgData: Uint8ClampedArray;
+} {
   const w = canvas.width;
   const h = canvas.height;
+  const ctx = canvas.getContext("2d")!;
   const imgData = ctx.getImageData(0, 0, w, h).data;
 
-  // 1. Detect label ink bounding box (ignore outer empty A4 page margins)
   let inkMinX = w;
   let inkMinY = h;
   let inkMaxX = 0;
@@ -69,10 +67,116 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
     inkMaxY = h;
   }
 
+  return { inkMinX, inkMinY, inkMaxX, inkMaxY, imgData };
+}
+
+function drawStampBox(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  boxW: number,
+  boxH: number,
+  fontSize: number,
+): void {
+  const radius = Math.max(6, Math.round(boxH * 0.16));
+  const strokeW = Math.max(3, Math.round(fontSize * 0.075));
+
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "#000000";
+  ctx.lineWidth = strokeW;
+
+  ctx.beginPath();
+  ctx.roundRect(x, y, boxW, boxH, radius);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#000000";
+  ctx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, x + boxW / 2, y + boxH / 2 + strokeW * 0.2);
+  ctx.restore();
+}
+
+/**
+ * Prepends a clean external header band directly above the entire shipping label (outside any box/barcode)
+ * and renders a large, ultra-clear warehouse category stamp centered above the barcode.
+ */
+function buildOuterTopStampedCanvas(
+  sourceCanvas: HTMLCanvasElement,
+  markText: string,
+): HTMLCanvasElement {
+  const text = markText.trim();
+  if (!text || sourceCanvas.width < 100 || sourceCanvas.height < 100) return sourceCanvas;
+
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+  const { inkMinX, inkMinY, inkMaxX, inkMaxY } = detectLabelInkBounds(sourceCanvas);
+  const inkW = Math.max(100, inkMaxX - inkMinX);
+
+  const measureCtx = sourceCanvas.getContext("2d")!;
+  const baseSize = Math.round(inkW * 0.118);
+  const lengthAdj = text.length > 3 ? Math.max(0.62, 3.0 / text.length) : 1;
+  const fontSize = Math.max(28, Math.round(baseSize * lengthAdj));
+  measureCtx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  const measuredW = Math.ceil(measureCtx.measureText(text).width);
+
+  const padX = Math.max(16, Math.round(fontSize * 0.45));
+  const padY = Math.max(8, Math.round(fontSize * 0.16));
+  const boxW = Math.min(inkW, Math.max(measuredW + padX * 2, Math.round(fontSize * 1.55)));
+  const boxH = Math.round(fontSize * 1.02 + padY * 2);
+
+  const topMargin = Math.max(8, Math.round(inkW * 0.015));
+  const gapToReceipt = Math.max(10, Math.round(inkW * 0.022));
+  const headerBandH = topMargin + boxH + gapToReceipt;
+
+  // Trim excess empty bottom margin so overall height stays balanced while keeping every line of the receipt
+  const srcStartY = Math.max(0, inkMinY - 4);
+  const bottomPad = Math.max(12, Math.round(inkW * 0.025));
+  const srcEndY = Math.min(h, inkMaxY + bottomPad);
+  const bodyH = Math.max(40, srcEndY - srcStartY);
+
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = headerBandH + bodyH;
+
+  const ctx = out.getContext("2d");
+  if (!ctx) return sourceCanvas;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+
+  // Copy receipt below the external header band
+  ctx.drawImage(sourceCanvas, 0, srcStartY, w, bodyH, 0, headerBandH, w, bodyH);
+
+  // Center large bold stamp cleanly above the outer border / barcode
+  const stampX = Math.round(inkMinX + (inkW - boxW) / 2);
+  const stampY = topMargin;
+  drawStampBox(ctx, text, stampX, stampY, boxW, boxH, fontSize);
+
+  return out;
+}
+
+/**
+ * Finds a clean ink-free empty box inside the shipping label bounds (avoiding QR/barcode boxes),
+ * prioritizing open white regions (COD row, product table right column), and stamps bold category text.
+ */
+export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: string | null): void {
+  const text = (markText ?? "").trim();
+  if (!text) return;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx || canvas.width < 100 || canvas.height < 100) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+  const { inkMinX, inkMinY, inkMaxX, inkMaxY, imgData } = detectLabelInkBounds(canvas);
   const inkW = inkMaxX - inkMinX;
   const inkH = inkMaxY - inkMinY;
 
-  // 2. Build 4px-cell Summed-Area Table of occupied (non-white) pixels for O(1) collision checks
+  // Build 4px-cell Summed-Area Table of occupied (non-white) pixels for O(1) collision checks
   const cell = 4;
   const cols = Math.ceil(w / cell);
   const rows = Math.ceil(h / cell);
@@ -102,55 +206,81 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
     }
   }
 
-  const hasInkInRect = (x0: number, y0: number, rw: number, rh: number): boolean => {
+  const getInkCount = (x0: number, y0: number, rw: number, rh: number): { sum: number; total: number } => {
     const gx0 = Math.max(0, Math.floor(x0 / cell));
     const gy0 = Math.max(0, Math.floor(y0 / cell));
     const gx1 = Math.min(cols, Math.ceil((x0 + rw) / cell));
     const gy1 = Math.min(rows, Math.ceil((y0 + rh) / cell));
-    if (gx1 <= gx0 || gy1 <= gy0) return true;
+    if (gx1 <= gx0 || gy1 <= gy0) return { sum: 1, total: 1 };
     const stride = cols + 1;
     const sum =
       sat[gy1 * stride + gx1] -
       sat[gy0 * stride + gx1] -
       sat[gy1 * stride + gx0] +
       sat[gy0 * stride + gx0];
-    return sum > 0;
+    return { sum, total: (gx1 - gx0) * (gy1 - gy0) };
   };
 
-  // 3. Measure stamp box dimensions (bold, high-legibility lettering with compact padding)
+  const hasInkInRect = (x0: number, y0: number, rw: number, rh: number): boolean =>
+    getInkCount(x0, y0, rw, rh).sum > 0;
+
+  // Detect J&T Cargo / FastTrack layout where a QR code sits on middle-right (x: 64%-95%, y: 40%-56%)
+  // Never draw inside that QR box's top quiet zone!
+  const qrProbe = getInkCount(
+    inkMinX + inkW * 0.64,
+    inkMinY + inkH * 0.41,
+    inkW * 0.30,
+    inkH * 0.14,
+  );
+  const leftSideProbe = getInkCount(
+    inkMinX + inkW * 0.10,
+    inkMinY + inkH * 0.47,
+    inkW * 0.40,
+    inkH * 0.06,
+  );
+  const hasRightMidQrBox =
+    qrProbe.sum / Math.max(1, qrProbe.total) > 0.14 &&
+    leftSideProbe.sum / Math.max(1, leftSideProbe.total) < 0.35;
+
+  // Measure stamp box dimensions (enlarged high-legibility lettering)
   const computeStampMetrics = (scaleFactor: number) => {
-    const baseSize = Math.round(inkW * 0.078 * scaleFactor);
-    const lengthAdj = text.length > 3 ? Math.max(0.68, 3.2 / text.length) : 1;
-    const fontSize = Math.max(20, Math.round(baseSize * lengthAdj));
+    const baseSize = Math.round(inkW * 0.095 * scaleFactor);
+    const lengthAdj = text.length > 3 ? Math.max(0.66, 3.1 / text.length) : 1;
+    const fontSize = Math.max(22, Math.round(baseSize * lengthAdj));
     ctx.font = `900 ${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
     const measuredW = Math.ceil(ctx.measureText(text).width);
-    const padX = Math.max(10, Math.round(fontSize * 0.36));
-    const padY = Math.max(4, Math.round(fontSize * 0.16));
-    const boxW = Math.max(measuredW + padX * 2, Math.round(fontSize * 1.42));
+    const padX = Math.max(12, Math.round(fontSize * 0.38));
+    const padY = Math.max(5, Math.round(fontSize * 0.16));
+    const boxW = Math.max(measuredW + padX * 2, Math.round(fontSize * 1.45));
     const boxH = Math.round(fontSize * 1.02 + padY * 2);
     return { fontSize, boxW, boxH };
   };
 
-  // Search zones inside label bounds in priority order
-  const zones = [
-    // Zone 1: Right half of COD / route middle band (exact spot highlighted by user)
-    { x0: 0.57, x1: 0.96, y0: 0.34, y1: 0.47 },
-    // Zone 2: Bottom-right of product table (under Seller SKU column, above Qty Total)
-    { x0: 0.48, x1: 0.96, y0: 0.72, y1: 0.90 },
-    // Zone 3: Upper-right / mid-right open space (FastTrack / other courier templates)
-    { x0: 0.56, x1: 0.96, y0: 0.24, y1: 0.70 },
-    // Zone 4: Left half of COD / middle band
-    { x0: 0.04, x1: 0.42, y0: 0.34, y1: 0.47 },
-    // Zone 5: Any open space inside label body
-    { x0: 0.05, x1: 0.95, y0: 0.16, y1: 0.94 },
-  ];
+  const zones = hasRightMidQrBox
+    ? [
+        // J&T Cargo / FastTrack: right of COD: row (safely below QR code box)
+        { x0: 0.58, x1: 0.96, y0: 0.57, y1: 0.69 },
+        // Bottom-right of product table
+        { x0: 0.48, x1: 0.96, y0: 0.72, y1: 0.92 },
+        // Bottom margin area
+        { x0: 0.05, x1: 0.95, y0: 0.85, y1: 0.98 },
+      ]
+    : [
+        // J&T Express: right half of COD middle band
+        { x0: 0.57, x1: 0.96, y0: 0.34, y1: 0.47 },
+        // Bottom-right of product table
+        { x0: 0.48, x1: 0.96, y0: 0.72, y1: 0.90 },
+        // Left half of COD middle band
+        { x0: 0.04, x1: 0.42, y0: 0.34, y1: 0.47 },
+        // Any open space outside QR/barcode regions
+        { x0: 0.05, x1: 0.95, y0: 0.24, y1: 0.94 },
+      ];
 
   let placedX: number | null = null;
   let placedY: number | null = null;
   let chosen = computeStampMetrics(1);
 
-  // Try each priority zone from largest scale down so top zones (e.g. next to COD) aren't skipped
-  const scaleSteps = [1.0, 0.9, 0.82, 0.74];
+  const scaleSteps = [1.0, 0.9, 0.8, 0.7];
   const clearance = Math.max(2, Math.round(inkW * 0.004));
 
   outerSearch: for (const z of zones) {
@@ -166,7 +296,6 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
       if (rxEnd < rxStart || ryEnd < ryStart) continue;
 
       const step = Math.max(4, Math.round(cell * 1.5));
-      // Center scan horizontally in zone & sweep vertically so stamp looks neatly placed
       const centerX = Math.round((rxStart + rxEnd) / 2);
       const xCandidates: number[] = [centerX];
       for (let dx = step; centerX - dx >= rxStart || centerX + dx <= rxEnd; dx += step) {
@@ -187,33 +316,27 @@ export function drawCategoryMarkOnCanvas(canvas: HTMLCanvasElement, markText?: s
     }
   }
 
-  // Fallback if every candidate zone has ink: anchor cleanly at bottom-right above Qty Total
   if (placedX === null || placedY === null) {
-    chosen = computeStampMetrics(0.9);
+    chosen = computeStampMetrics(0.85);
     placedX = Math.max(8, Math.round(inkMinX + inkW * 0.95 - chosen.boxW));
     placedY = Math.max(8, Math.round(inkMinY + inkH * 0.78));
   }
 
-  // 4. Draw crisp white-backed high-contrast rounded marker stamp
-  const radius = Math.max(6, Math.round(chosen.boxH * 0.16));
-  const strokeW = Math.max(2, Math.round(chosen.fontSize * 0.075));
+  drawStampBox(ctx, text, placedX, placedY, chosen.boxW, chosen.boxH, chosen.fontSize);
+}
 
-  ctx.save();
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "#000000";
-  ctx.lineWidth = strokeW;
-
-  ctx.beginPath();
-  ctx.roundRect(placedX, placedY, chosen.boxW, chosen.boxH, radius);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = "#000000";
-  ctx.font = `900 ${chosen.fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, placedX + chosen.boxW / 2, placedY + chosen.boxH / 2 + strokeW * 0.25);
-  ctx.restore();
+function applyStampToCanvas(
+  canvas: HTMLCanvasElement,
+  stampMark?: string | null,
+  stampPosition: StampPositionMode = "top",
+): HTMLCanvasElement {
+  const text = (stampMark ?? "").trim();
+  if (!text) return canvas;
+  if (stampPosition === "top") {
+    return buildOuterTopStampedCanvas(canvas, text);
+  }
+  drawCategoryMarkOnCanvas(canvas, text);
+  return canvas;
 }
 
 /**
@@ -224,6 +347,7 @@ export async function renderPdfPageToCanvas(
   pageNumber: number,
   scale = 2.0,
   stampMark?: string | null,
+  stampPosition: StampPositionMode = "top",
 ): Promise<HTMLCanvasElement> {
   const pdf = await getPdfDocument(file);
   const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
@@ -242,8 +366,7 @@ export async function renderPdfPageToCanvas(
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   await page.render({ canvasContext: ctx, viewport }).promise;
-  if (stampMark) drawCategoryMarkOnCanvas(canvas, stampMark);
-  return canvas;
+  return applyStampToCanvas(canvas, stampMark, stampPosition);
 }
 
 /**
@@ -255,6 +378,7 @@ export async function renderPdfPageForThermal(
   pageNumber: number,
   targetWidthDots: number,
   stampMark?: string | null,
+  stampPosition: StampPositionMode = "top",
 ): Promise<HTMLCanvasElement> {
   const pdf = await getPdfDocument(file);
   const safePage = Math.max(1, Math.min(pageNumber, pdf.numPages));
@@ -277,8 +401,7 @@ export async function renderPdfPageForThermal(
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   await page.render({ canvasContext: ctx, viewport }).promise;
-  if (stampMark) drawCategoryMarkOnCanvas(canvas, stampMark);
-  return canvas;
+  return applyStampToCanvas(canvas, stampMark, stampPosition);
 }
 
 /**
@@ -289,7 +412,8 @@ export async function renderPdfPageToDataUrl(
   pageNumber: number,
   scale = 1.6,
   stampMark?: string | null,
+  stampPosition: StampPositionMode = "top",
 ): Promise<string> {
-  const canvas = await renderPdfPageToCanvas(file, pageNumber, scale, stampMark);
+  const canvas = await renderPdfPageToCanvas(file, pageNumber, scale, stampMark, stampPosition);
   return canvas.toDataURL("image/png");
 }
