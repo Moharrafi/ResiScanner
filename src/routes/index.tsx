@@ -184,6 +184,7 @@ function Index() {
         qty: r.qty,
         pageWeightSize: r.pageWeightSize,
         pageNumber: r.pageNumber,
+        pageText: r.pageText,
       })),
     );
     return parseProducts(allRaw);

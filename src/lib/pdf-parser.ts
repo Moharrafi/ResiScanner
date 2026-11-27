@@ -13,7 +13,20 @@ export type ProductRow = {
   qty: number;
   pageWeightSize?: string | null; // fallback weight extracted from shipping label (e.g. "1KG")
   pageNumber?: number; // 1-indexed page number in source PDF
+  pageText?: string; // normalized full text from the PDF page for receipt search
 };
+
+/**
+ * Extracts a primary tracking / AWB number from normalized shipping label page text (if present).
+ */
+export function extractTrackingNoFromPageText(pageText?: string): string | null {
+  if (!pageText) return null;
+  const m =
+    pageText.match(/\b(?:JY|JX|JT|JD|JP|TK)[A-Z0-9]{6,16}\b/i) ??
+    pageText.match(/\bSPXID[A-Z0-9]{6,18}\b/i) ??
+    pageText.match(/\b57\d{10,13}\b/);
+  return m ? m[0].toUpperCase() : null;
+}
 
 /**
  * Formats a concise warehouse marker code for a PDF shipping label page:
@@ -272,6 +285,7 @@ export type RawExtractedRow = {
   qty: number;
   pageWeightSize?: string | null;
   pageNumber?: number;
+  pageText?: string;
 };
 
 export async function extractRowsFromPdf(file: File): Promise<RawExtractedRow[]> {
@@ -307,10 +321,11 @@ export async function extractRowsFromPdf(file: File): Promise<RawExtractedRow[]>
       else rows.push([it]);
     }
 
-    // Extract text lines for this page to find "Berat: XXX gr/kg"
+    // Extract text lines for this page to find "Berat: XXX gr/kg" and build search index text
     const textLines = rows.map((r) =>
       [...r].sort((a, b) => a.x - b.x).map((it) => it.str).join(" "),
     );
+    const normalizedPageText = textLines.join(" ").replace(/\s+/g, " ").trim();
     const pageWeightInKg = extractPageWeightInKg(textLines);
 
     const pageRows: RawExtractedRow[] = [];
@@ -470,6 +485,7 @@ export async function extractRowsFromPdf(file: File): Promise<RawExtractedRow[]>
 
     for (const pr of pageRows) {
       pr.pageNumber = p;
+      pr.pageText = normalizedPageText;
     }
     allRows.push(...pageRows);
   }
@@ -478,7 +494,14 @@ export async function extractRowsFromPdf(file: File): Promise<RawExtractedRow[]>
 }
 
 export function parseProducts(
-  raw: { name: string; sku?: string | null; qty: number; pageWeightSize?: string | null; pageNumber?: number }[],
+  raw: {
+    name: string;
+    sku?: string | null;
+    qty: number;
+    pageWeightSize?: string | null;
+    pageNumber?: number;
+    pageText?: string;
+  }[],
 ): {
   rows: ProductRow[];
   grouped: GroupedProduct[];
@@ -510,6 +533,7 @@ export function parseProducts(
       qty: r.qty,
       pageWeightSize: r.pageWeightSize,
       pageNumber: r.pageNumber,
+      pageText: r.pageText,
     };
   });
 

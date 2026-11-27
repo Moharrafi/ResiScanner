@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   Table as TableIcon,
   Image as ImageIcon,
+  Search,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { formatCategoryStampMark, type ProductCategory, type ProductRow } from "@/lib/pdf-parser";
+import {
+  extractTrackingNoFromPageText,
+  formatCategoryStampMark,
+  type ProductCategory,
+  type ProductRow,
+} from "@/lib/pdf-parser";
 import {
   renderPdfPageForThermal,
   renderPdfPageToCanvas,
@@ -73,6 +79,8 @@ type PdfPageCardData = {
   totalQty: number;
   stampMark: string;
   activeStampMark: string | null;
+  trackingNo: string | null;
+  searchText: string;
 };
 
 const CATEGORY_META: Record<
@@ -142,6 +150,7 @@ export function PdfPreviewPrintTab({
 }) {
   const [viewMode, setViewMode] = useState<"pdf" | "table">("pdf");
   const [selectedCategory, setSelectedCategory] = useState<"all" | ProductCategory>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [zoomPage, setZoomPage] = useState<PdfPageCardData | null>(null);
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
 
@@ -277,6 +286,26 @@ export function PdfPreviewPrintTab({
         if (!map.has(k)) {
           const allPageRows = pageAllRowsMap.get(`${fileIdx}::${pageNum}`) ?? [];
           const rawMark = formatCategoryStampMark(allPageRows);
+          const rawPageText = allPageRows.find((it) => it.pageText)?.pageText ?? "";
+          const trackingNo = extractTrackingNoFromPageText(rawPageText);
+          const itemTerms = allPageRows
+            .map((it) => `${it.name} ${it.sku ?? ""} ${it.size ?? ""} ${it.raw}`)
+            .join(" ");
+          const searchText = [
+            `hal ${pageNum}`,
+            `halaman ${pageNum}`,
+            String(pageNum),
+            f.name,
+            CATEGORY_META[cat].label,
+            cat,
+            rawMark,
+            trackingNo ?? "",
+            itemTerms,
+            rawPageText,
+          ]
+            .join(" ")
+            .toLowerCase();
+
           map.set(k, {
             key: k,
             fileIdx,
@@ -288,6 +317,8 @@ export function PdfPreviewPrintTab({
             totalQty: 0,
             stampMark: rawMark,
             activeStampMark: showStampMark && rawMark ? rawMark : null,
+            trackingNo,
+            searchText,
           });
         }
         const entry = map.get(k)!;
@@ -321,6 +352,68 @@ export function PdfPreviewPrintTab({
       totalUniquePages: map.size,
     };
   }, [files, showStampMark]);
+
+  const trimmedSearch = searchQuery.trim().toLowerCase();
+
+  const {
+    filteredPagesByCategory,
+    filteredOrderedCategories,
+    filteredTotalPages,
+    filteredRows,
+  } = useMemo(() => {
+    if (!trimmedSearch) {
+      return {
+        filteredPagesByCategory: pagesByCategory,
+        filteredOrderedCategories: orderedCategories,
+        filteredTotalPages: totalUniquePages,
+        filteredRows: rows,
+      };
+    }
+
+    const halMatch = trimmedSearch.match(/^(?:hal\.?|halaman)\s*#?(\d+)$/i);
+    const exactPageNum = halMatch ? parseInt(halMatch[1], 10) : null;
+    const tokens = trimmedSearch.split(/\s+/).filter(Boolean);
+
+    const matchesPage = (p: PdfPageCardData) => {
+      if (exactPageNum !== null) return p.pageNumber === exactPageNum;
+      return tokens.every((t) => p.searchText.includes(t));
+    };
+
+    const grouped: Record<ProductCategory, PdfPageCardData[]> = {
+      hitam: pagesByCategory.hitam.filter(matchesPage),
+      hijau: pagesByCategory.hijau.filter(matchesPage),
+      bitumax: pagesByCategory.bitumax.filter(matchesPage),
+      lainnya: pagesByCategory.lainnya.filter(matchesPage),
+    };
+
+    const cats: ProductCategory[] = (["hitam", "hijau", "bitumax", "lainnya"] as ProductCategory[]).filter(
+      (c) => grouped[c].length > 0,
+    );
+
+    const total = cats.reduce((sum, c) => sum + grouped[c].length, 0);
+
+    const fRows = rows.filter((r) => {
+      if (exactPageNum !== null) return r.pageNumber === exactPageNum;
+      const hay = [
+        r.pageNumber != null ? `hal ${r.pageNumber} halaman ${r.pageNumber} ${r.pageNumber}` : "",
+        r.name,
+        r.sku ?? "",
+        r.size ?? "",
+        r.category,
+        r.pageText ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return tokens.every((t) => hay.includes(t));
+    });
+
+    return {
+      filteredPagesByCategory: grouped,
+      filteredOrderedCategories: cats,
+      filteredTotalPages: total,
+      filteredRows: fRows,
+    };
+  }, [trimmedSearch, pagesByCategory, orderedCategories, totalUniquePages, rows]);
 
   // Register Android Native Bluetooth Event Listeners
   useEffect(() => {
@@ -530,8 +623,8 @@ export function PdfPreviewPrintTab({
     }
   };
 
-  const printCategoryBatch = async (cat: ProductCategory) => {
-    const pages = pagesByCategory[cat];
+  const printCategoryBatch = async (cat: ProductCategory, customPages?: PdfPageCardData[]) => {
+    const pages = customPages ?? filteredPagesByCategory[cat];
     if (!pages.length) return;
 
     if (!connectedPrinter) {
@@ -662,8 +755,8 @@ export function PdfPreviewPrintTab({
 
   const visibleCategories =
     selectedCategory === "all"
-      ? orderedCategories
-      : orderedCategories.filter((c) => c === selectedCategory);
+      ? filteredOrderedCategories
+      : filteredOrderedCategories.filter((c) => c === selectedCategory);
 
   return (
     <div className="space-y-4">
@@ -756,6 +849,35 @@ export function PdfPreviewPrintTab({
         </CardContent>
       </Card>
 
+      {/* SEARCH BAR RESI */}
+      <div className="relative flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Cari resi: no. resi (JY.../5707...), nama, alamat, order ID, hal 6, atau tanda B1/H5..."
+            className="h-9 w-full rounded-xl border border-border/80 bg-card pl-9 pr-9 text-xs sm:text-sm text-foreground placeholder:text-muted-foreground shadow-2xs outline-hidden transition-colors focus:border-foreground/50 focus:ring-2 focus:ring-ring/20 [&::-webkit-search-cancel-button]:hidden"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              aria-label="Hapus pencarian"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        {trimmedSearch && (
+          <Badge variant="secondary" className="h-9 px-3 text-xs font-semibold shrink-0 rounded-xl">
+            {viewMode === "pdf" ? `${filteredTotalPages} resi` : `${filteredRows.length} baris`}
+          </Badge>
+        )}
+      </div>
+
       {/* BATCH PRINT PROGRESS BANNER */}
       {batchProgress && (
         <Card className="border border-border bg-muted/40 rounded-xl">
@@ -799,10 +921,10 @@ export function PdfPreviewPrintTab({
                   : "bg-card text-muted-foreground border-border/80 hover:text-foreground"
               }`}
             >
-              Semua ({totalUniquePages})
+              Semua ({filteredTotalPages})
             </button>
             {(["hitam", "hijau", "bitumax"] as ProductCategory[]).map((cat) => {
-              const count = pagesByCategory[cat].length;
+              const count = filteredPagesByCategory[cat].length;
               const active = selectedCategory === cat;
               return (
                 <button
@@ -823,13 +945,27 @@ export function PdfPreviewPrintTab({
 
           {visibleCategories.length === 0 ? (
             <Card className="border border-dashed border-border/80 bg-card rounded-xl">
-              <CardContent className="py-8 text-center text-xs sm:text-sm text-muted-foreground">
-                Tidak ada halaman PDF pada kategori yang dipilih.
+              <CardContent className="py-8 text-center text-xs sm:text-sm text-muted-foreground space-y-2.5">
+                <p>
+                  {trimmedSearch
+                    ? `Tidak ada resi yang cocok dengan pencarian "${searchQuery.trim()}".`
+                    : "Tidak ada halaman PDF pada kategori yang dipilih."}
+                </p>
+                {trimmedSearch && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSearchQuery("")}
+                    className="h-7 text-xs"
+                  >
+                    Hapus Pencarian
+                  </Button>
+                )}
               </CardContent>
             </Card>
           ) : (
             visibleCategories.map((cat) => {
-              const pages = pagesByCategory[cat];
+              const pages = filteredPagesByCategory[cat];
               const meta = CATEGORY_META[cat];
               const totalPcs = pages.reduce((acc, p) => acc + p.totalQty, 0);
 
@@ -852,11 +988,11 @@ export function PdfPreviewPrintTab({
                       size="sm"
                       variant="outline"
                       disabled={Boolean(batchProgress)}
-                      onClick={() => printCategoryBatch(cat)}
+                      onClick={() => printCategoryBatch(cat, pages)}
                       className="h-8 text-xs font-semibold gap-1.5 self-start sm:self-auto"
                     >
                       <Printer className="h-3.5 w-3.5" />
-                      Print Semua {meta.label.split(" ")[0]} ({pages.length})
+                      {trimmedSearch ? "Print Hasil" : "Print Semua"} {meta.label.split(" ")[0]} ({pages.length})
                     </Button>
                   </CardHeader>
 
@@ -883,7 +1019,8 @@ export function PdfPreviewPrintTab({
         <Card className="border border-border/80 shadow-2xs rounded-xl bg-card">
           <CardHeader className="py-3 px-4 sm:px-5 border-b border-border/60">
             <CardTitle className="text-sm sm:text-base font-bold">
-              Baris Mentah Terdeteksi ({rows.length})
+              Baris Mentah Terdeteksi ({filteredRows.length}
+              {trimmedSearch ? ` dari ${rows.length}` : ""})
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0 sm:p-4">
@@ -900,7 +1037,14 @@ export function PdfPreviewPrintTab({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((r, i) => (
+                  {filteredRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="py-8 text-center text-xs text-muted-foreground">
+                        Tidak ada data yang cocok dengan pencarian "{searchQuery.trim()}".
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredRows.map((r, i) => (
                     <TableRow key={i} className="text-xs">
                       <TableCell className="py-2.5 text-muted-foreground tabular-nums">
                         {r.pageNumber ?? "-"}
@@ -927,7 +1071,8 @@ export function PdfPreviewPrintTab({
                       </TableCell>
                       <TableCell className="text-right font-bold tabular-nums py-2.5">{r.qty}</TableCell>
                     </TableRow>
-                  ))}
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>
@@ -1467,8 +1612,11 @@ function PdfPageCard({
 
       {/* FOOTER PRINT ACTION */}
       <div className="p-2 border-t border-border/60 bg-card flex items-center justify-between gap-1.5">
-        <span className="text-[10px] text-muted-foreground truncate" title={page.fileName}>
-          {page.fileName}
+        <span
+          className="text-[10px] text-muted-foreground truncate"
+          title={page.trackingNo ? `${page.trackingNo} · ${page.fileName}` : page.fileName}
+        >
+          {page.trackingNo ? `${page.trackingNo} · ${page.fileName}` : page.fileName}
         </span>
         <Button
           size="sm"
